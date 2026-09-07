@@ -111,8 +111,21 @@ def main() -> int:
         print(f"  iteration {entry['iteration']:3d}   best {entry['best']:8.3f}"
               f"   population mean {entry['mean']:8.3f}")
 
+    def save_progress(policy, score, off_road, attempt):
+        policy.save(args.out, metadata={
+            "restarts_completed": attempt + 1,
+            "held_out_score": score,
+            "left_the_road": off_road,
+            "iterations": args.iterations,
+            "population": args.population,
+            "seed": args.seed,
+            "complete": False,
+        })
+        print(f"     saved to {args.out} (best so far -- safe to stop here)\n")
+
     policy, history = learn_with_restarts(
         restarts=args.restarts,
+        on_improvement=save_progress,
         iterations=args.iterations,
         population=args.population,
         episodes_per_candidate=args.episodes,

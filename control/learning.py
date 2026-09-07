@@ -242,6 +242,7 @@ def learn_with_restarts(
     restarts: int = 4,
     seed: int = 0,
     progress: Any = None,
+    on_improvement: Any = None,
     **kwargs: Any,
 ) -> tuple[DrivingPolicy, list[dict[str, float]]]:
     """Train several times and keep the policy that generalises best.
@@ -280,6 +281,10 @@ def learn_with_restarts(
             })
         if score > best_score:
             best_score, best, best_history = score, policy, history
+            # Saved as we go: a full run is a quarter of an hour, and losing all
+            # of it to an impatient Ctrl+C is a poor trade.
+            if on_improvement is not None:
+                on_improvement(policy, score, off_road, attempt)
 
     assert best is not None
     return best, best_history
