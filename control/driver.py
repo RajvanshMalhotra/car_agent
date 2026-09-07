@@ -249,6 +249,17 @@ class Driver:
             throttle=throttle, brake=brake, steering=steering_command
         )
 
+    def restart(self, path: Path) -> None:
+        """Follow a new route from wherever the vehicle now is, after recovery."""
+        self.path = path
+        self.progress_m = 0.0
+        self.decision_progress_m = 0.0
+        self.travelled_m = 0.0
+        self._previous_position = None
+        self.observed.clear()
+        self.speed_controller.reset()
+        self.waiting_until_s = None
+
     def deviation_m(self, state: VehicleState) -> float:
         """How far the vehicle is from the route it is meant to be on."""
         arc_length = self.path.closest_arc_length(

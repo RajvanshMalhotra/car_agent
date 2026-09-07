@@ -231,6 +231,21 @@ class MCPBackend(SimBackend):
         self._baseline_damage = self._damage
         return snapshot
 
+    def recover(self) -> VehicleState:
+        """Repair the vehicle and put it back on the nearest road.
+
+        BeamNG's own recovery, the same one Ctrl+R does. Where it lands is not
+        where the run started, so whatever is driving must re-lay its route.
+        """
+        for event in ("throttle", "brake", "steering"):
+            self._inject(event, 0.0, force=True)
+        self.client.call("recover_vehicle", {"id": self.vehicle_id})
+        self._last_position = None
+        snapshot = self.read_state()
+        # Damage from before the recovery is not the next attempt's fault.
+        self._baseline_damage = self._damage
+        return snapshot
+
     def close(self) -> None:
         try:
             for event in ("throttle", "brake", "steering"):

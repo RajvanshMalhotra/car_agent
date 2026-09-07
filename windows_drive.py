@@ -40,6 +40,8 @@ from control.calibration import (  # noqa: E402
     CalibrationError, VehicleLimits, calibrate, load_limits, save_limits,
 )
 from control.route import load_route  # noqa: E402
+from control.policy import DrivingPolicy  # noqa: E402
+from control.policy_driver import PolicyDriver  # noqa: E402
 from control.tuner import ControllerGains, tune  # noqa: E402
 from sim.backend import ControlInput  # noqa: E402
 from sim.gamepad_udp import GamepadUDPBackend  # noqa: E402
@@ -92,6 +94,13 @@ def main() -> int:
     parser.add_argument("--tune", action="store_true",
                         help="learn controller gains for the measured vehicle "
                              "(trains against the fake backend, seconds not days)")
+    parser.add_argument("--policy", nargs="?", const="policies/default.json",
+                        default=None,
+                        help="drive with a learned policy (default "
+                             "policies/default.json). Needs no calibration.")
+    parser.add_argument("--recoveries", type=int, default=5,
+                        help="how many times to repair and carry on after a "
+                             "crash or losing the route")
     parser.add_argument("--vehicle", default=None,
                         help="name for the cached calibration (default: ask the game)")
     args = parser.parse_args()
@@ -154,8 +163,12 @@ def main() -> int:
             cold_start=spec.cold_start,
             ports=args.ports,
         )
-    # Vehicle limits: the controller assumed a passenger car, which is wrong
-    # for anything else and mis-scales every command it sends.
+    # A learned policy needs nothing measured: it was trained across randomised
+    # vehicles, so there is no calibration step and nothing to reject.
+    policy = DrivingPolicy.load(args.policy) if args.policy else None
+    if policy is not None:
+        print(f"  policy    : {args.policy} (no calibration needed)")
+
     vehicle = args.vehicle
     if vehicle is None and args.mcp:
         try:
@@ -165,7 +178,9 @@ def main() -> int:
     vehicle = vehicle or "unknown"
 
     limits = load_limits(LIMITS_DIR, vehicle)
-    if args.calibrate or limits is None:
+    if policy is not None:
+        limits = limits or VehicleLimits(vehicle, 3.0, 8.0, 2.7)
+    elif args.calibrate or limits is None:
         print(f"  calibrating '{vehicle}' (about 20 s of driving)...")
         backend.reset()
         try:
@@ -178,11 +193,12 @@ def main() -> int:
             print("  falling back to passenger-car defaults; the run is still "
                   "usable but the limits are assumed, not measured.")
             limits = VehicleLimits(vehicle, 3.0, 8.0, 2.7)
-    print(f"  vehicle   : {vehicle}  accel {limits.max_accel_mps2:.2f} "
-          f"decel {limits.max_decel_mps2:.2f} wheelbase {limits.wheelbase_m:.2f} m")
+    if policy is None:
+        print(f"  vehicle   : {vehicle}  accel {limits.max_accel_mps2:.2f} "
+              f"decel {limits.max_decel_mps2:.2f} wheelbase {limits.wheelbase_m:.2f} m")
 
     gains = ControllerGains.default()
-    if args.tune:
+    if args.tune and policy is None:
         print("  tuning gains against the fake backend...")
         gains = tune(spec, limits, seed=args.seed)
         print(f"  gains     : kp={gains.kp:.2f} ki={gains.ki:.2f} kd={gains.kd:.3f} "
@@ -219,16 +235,29 @@ def main() -> int:
         print(f"  NOTE: --rate {args.rate:.0f} Hz is optimistic over HTTP; "
               f"20 Hz is a safer start with --mcp.\n")
 
-    driver = Driver(
-        spec, route, dt=dt, speed_limit_mps=args.speed_limit, seed=args.seed,
-        max_deviation_m=args.max_deviation,
-        wheelbase_m=limits.wheelbase_m,
-        max_steer_rad=limits.max_steer_rad,
-        max_accel_mps2=limits.max_accel_mps2,
-        max_decel_mps2=limits.max_decel_mps2,
-        gains=gains,
-        stops=stops,
-    )
+    def build_route():
+        """Lay a route from wherever the car is now, facing wherever it faces."""
+        x, y, heading = measure_heading(backend, dt=dt)
+        if manoeuvre_route is not None:
+            return manoeuvre_route.to_path(origin=(x, y), heading_rad=heading)
+        return straight_route_from((x, y), heading, args.route_length)
+
+    if policy is not None:
+        driver = PolicyDriver(
+            policy, spec, route, dt=dt, speed_limit_mps=args.speed_limit,
+            seed=args.seed, stops=stops, max_deviation_m=args.max_deviation,
+        )
+    else:
+        driver = Driver(
+            spec, route, dt=dt, speed_limit_mps=args.speed_limit, seed=args.seed,
+            max_deviation_m=args.max_deviation,
+            wheelbase_m=limits.wheelbase_m,
+            max_steer_rad=limits.max_steer_rad,
+            max_accel_mps2=limits.max_accel_mps2,
+            max_decel_mps2=limits.max_decel_mps2,
+            gains=gains,
+            stops=stops,
+        )
 
     log_path = LOG_DIR / f"{time.strftime('%Y%m%d-%H%M%S')}_{spec.spec_hash}.csv"
     print(f"behaviour : {spec.name}  [{spec.spec_hash}]")
@@ -237,6 +266,7 @@ def main() -> int:
     print("Ctrl+C to stop. Controls are released on exit.\n")
 
     started = time.monotonic()
+    recoveries = 0
     next_log = 0.0
     log_interval = 1.0 / args.log_hz
     log = RunLog(
@@ -259,17 +289,34 @@ def main() -> int:
                 control = driver.step(state)
                 backend.apply_control(control)
 
-                if getattr(backend, "has_crashed", lambda: False)():
-                    taken = getattr(backend, "damage_since_start", 0.0)
-                    print(f"\n  CRASHED at t={elapsed:.1f}s: damage {taken:.0f} "
-                          f"(threshold {args.crash_damage:.0f}). Releasing controls.")
-                    break
-
-                if driver.is_lost(state):
-                    print(f"\n  ABANDONED at t={elapsed:.1f}s: "
-                          f"{driver.deviation_m(state):.1f} m off the route "
-                          f"(limit {args.max_deviation:.0f} m). Releasing controls.")
-                    break
+                crashed = getattr(backend, "has_crashed", lambda: False)()
+                lost = driver.is_lost(state)
+                if crashed or lost:
+                    why = (
+                        f"crashed (damage {getattr(backend, 'damage_since_start', 0.0):.0f})"
+                        if crashed else
+                        f"{driver.deviation_m(state):.1f} m off the route"
+                    )
+                    if recoveries >= args.recoveries or not hasattr(backend, "recover"):
+                        print(f"\n  STOPPING at t={elapsed:.1f}s: {why}. "
+                              f"Releasing controls.")
+                        break
+                    recoveries += 1
+                    print(f"\n  {why} at t={elapsed:.1f}s -- repairing and "
+                          f"carrying on ({recoveries}/{args.recoveries})")
+                    backend.recover()
+                    # A recovered car is put back on the nearest road, which is
+                    # somewhere else entirely, so the route is re-laid from
+                    # there rather than the old one being chased across the map.
+                    try:
+                        driver.restart(build_route())
+                    except (RuntimeError, AttributeError) as error:
+                        print(f"  could not resume: {error}")
+                        break
+                    # Each recovery starts a fresh trip, which is what the
+                    # sulfation pathway is defined over.
+                    log.end_trip()
+                    continue
 
                 if elapsed >= next_log:
                     next_log += log_interval
@@ -292,6 +339,8 @@ def main() -> int:
     if summary["rows"]:
         print(f"\n{summary['rows']} rows -> {log_path}")
         print(f"  metadata         -> {log.sidecar_path}")
+        if recoveries:
+            print(f"  recoveries       {recoveries}")
         print(f"  idle fraction    {summary['idle_fraction']:.2f} "
               f"(behaviour asked for {spec.idle_fraction:.2f})")
         print(f"  bay temperature  mean {summary['mean_underbonnet_c']:.1f} C  "
