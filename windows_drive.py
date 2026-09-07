@@ -36,13 +36,19 @@ from datalog.writer import RunLog  # noqa: E402
 from control.driver import Driver  # noqa: E402
 from control.path import Path  # noqa: E402
 from control.alignment import measure_heading, straight_route_from  # noqa: E402
+from control.calibration import (  # noqa: E402
+    CalibrationError, VehicleLimits, calibrate, load_limits, save_limits,
+)
 from control.route import load_route  # noqa: E402
+from control.tuner import ControllerGains, tune  # noqa: E402
 from sim.backend import ControlInput  # noqa: E402
 from sim.gamepad_udp import GamepadUDPBackend  # noqa: E402
 from sim.mcp_backend import MCPBackend  # noqa: E402
 
 CACHE_DIR = FilePath(__file__).parent / "behaviour" / "cache"
 LOG_DIR = FilePath(__file__).parent / "runs"
+LIMITS_DIR = FilePath(__file__).parent / "vehicles"
+ROUTE_SPEC_DIR = FilePath(__file__).parent / "behaviour" / "routes"
 
 
 def load_specs() -> list[BehaviourSpec]:
@@ -70,6 +76,7 @@ def main() -> int:
                         help="UDP ports to listen on; both streams may share one")
     parser.add_argument("--route-length", type=float, default=3000.0)
     parser.add_argument("--route", help="a route recorded with windows_record.py")
+    parser.add_argument("--manoeuvres", help="an LLM-designed route: part of its name")
     parser.add_argument("--max-deviation", type=float, default=8.0,
                         help="abandon the run once this far off the route")
     parser.add_argument("--seed", type=int, default=0)
@@ -77,6 +84,14 @@ def main() -> int:
                         help="drive through BeamNG's built-in MCP server instead "
                              "of the virtual gamepad (0.39+; no ViGEmBus, no UDP)")
     parser.add_argument("--mcp-endpoint", default=None)
+    parser.add_argument("--calibrate", action="store_true",
+                        help="measure this vehicle's acceleration, braking and "
+                             "steering response before driving, and cache them")
+    parser.add_argument("--tune", action="store_true",
+                        help="learn controller gains for the measured vehicle "
+                             "(trains against the fake backend, seconds not days)")
+    parser.add_argument("--vehicle", default=None,
+                        help="name for the cached calibration (default: ask the game)")
     args = parser.parse_args()
 
     specs = load_specs()
@@ -94,6 +109,20 @@ def main() -> int:
         return 1
     spec = matches[0]
 
+    stops = []
+    manoeuvre_route = None
+    if args.manoeuvres:
+        from behaviour.route_spec import RouteSpec
+
+        for candidate in sorted(ROUTE_SPEC_DIR.glob("*.json")):
+            stored = json.loads(candidate.read_text())["spec"]
+            if args.manoeuvres.lower() in stored["name"].lower():
+                manoeuvre_route = RouteSpec.from_dict(stored)
+                break
+        if manoeuvre_route is None:
+            print(f"no cached route matching {args.manoeuvres!r}", file=sys.stderr)
+            return 1
+
     if args.route:
         route_file = FilePath(args.route)
         if not route_file.exists():
@@ -104,7 +133,10 @@ def main() -> int:
         recorded = route_file
     else:
         recorded = None
-        scenario = f"aligned-straight-{args.route_length:.0f}m"
+        scenario = (
+            f"manoeuvres-{manoeuvre_route.route_hash}" if manoeuvre_route
+            else f"aligned-straight-{args.route_length:.0f}m"
+        )
     dt = 1.0 / args.rate
 
     if args.mcp:
@@ -119,6 +151,40 @@ def main() -> int:
             cold_start=spec.cold_start,
             ports=args.ports,
         )
+    # Vehicle limits: the controller assumed a passenger car, which is wrong
+    # for anything else and mis-scales every command it sends.
+    vehicle = args.vehicle
+    if vehicle is None and args.mcp:
+        try:
+            vehicle = (backend.client.call("get_vehicle") or {}).get("jbeam", "unknown")
+        except Exception:
+            vehicle = "unknown"
+    vehicle = vehicle or "unknown"
+
+    limits = load_limits(LIMITS_DIR, vehicle)
+    if args.calibrate or limits is None:
+        print(f"  calibrating '{vehicle}' (about 20 s of driving)...")
+        backend.reset()
+        try:
+            limits = calibrate(backend, dt=dt, vehicle=vehicle).validate()
+            save_limits(LIMITS_DIR, limits)
+        except (CalibrationError, RuntimeError) as error:
+            # Driving on a bad measurement mis-scales every command, which is
+            # worse than driving on the passenger-car defaults.
+            print(f"  calibration REJECTED: {error}")
+            print("  falling back to passenger-car defaults; the run is still "
+                  "usable but the limits are assumed, not measured.")
+            limits = VehicleLimits(vehicle, 3.0, 8.0, 2.7)
+    print(f"  vehicle   : {vehicle}  accel {limits.max_accel_mps2:.2f} "
+          f"decel {limits.max_decel_mps2:.2f} wheelbase {limits.wheelbase_m:.2f} m")
+
+    gains = ControllerGains.default()
+    if args.tune:
+        print("  tuning gains against the fake backend...")
+        gains = tune(spec, limits, seed=args.seed)
+        print(f"  gains     : kp={gains.kp:.2f} ki={gains.ki:.2f} kd={gains.kd:.3f} "
+              f"lookahead={gains.lookahead_gain_s:.2f}s")
+
     # The route has to start where the car is and run the way it faces. Rather
     # than trusting a reported orientation whose conventions are undocumented,
     # roll the car forward briefly and measure which way it actually went.
@@ -135,9 +201,16 @@ def main() -> int:
             backend.apply_control(ControlInput(0.0, 0.0, 0.0))
             backend.close()
             return 1
-        route = straight_route_from((x, y), heading, args.route_length)
-        print(f"  aligned: heading {math.degrees(heading):.1f} deg, "
-              f"{args.route_length:.0f} m straight ahead")
+        if manoeuvre_route is not None:
+            route = manoeuvre_route.to_path(origin=(x, y), heading_rad=heading)
+            stops = manoeuvre_route.stops()
+            print(f"  aligned: heading {math.degrees(heading):.1f} deg")
+            print(f"  route  : '{manoeuvre_route.name}', {route.length_m:.0f} m, "
+                  f"{len(stops)} stops, {manoeuvre_route.total_stop_time_s():.0f}s idle")
+        else:
+            route = straight_route_from((x, y), heading, args.route_length)
+            print(f"  aligned: heading {math.degrees(heading):.1f} deg, "
+                  f"{args.route_length:.0f} m straight ahead")
 
     if args.mcp and args.rate > 25.0:
         print(f"  NOTE: --rate {args.rate:.0f} Hz is optimistic over HTTP; "
@@ -146,6 +219,12 @@ def main() -> int:
     driver = Driver(
         spec, route, dt=dt, speed_limit_mps=args.speed_limit, seed=args.seed,
         max_deviation_m=args.max_deviation,
+        wheelbase_m=limits.wheelbase_m,
+        max_steer_rad=limits.max_steer_rad,
+        max_accel_mps2=limits.max_accel_mps2,
+        max_decel_mps2=limits.max_decel_mps2,
+        gains=gains,
+        stops=stops,
     )
 
     log_path = LOG_DIR / f"{time.strftime('%Y%m%d-%H%M%S')}_{spec.spec_hash}.csv"

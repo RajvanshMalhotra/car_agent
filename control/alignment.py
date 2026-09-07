@@ -25,6 +25,9 @@ DEFAULT_MIN_DISTANCE_M = 5.0
 #: Gentle: this is a measurement, not part of the behaviour being studied.
 DEFAULT_THROTTLE = 0.25
 
+#: Guard against a backend whose clock never advances.
+MAX_STEPS = 100_000
+
 
 def measure_heading(
     backend: SimBackend,
@@ -41,13 +44,18 @@ def measure_heading(
     start = backend.read_state()
     origin = (start.x_m, start.y_m)
 
-    elapsed = 0.0
+    # Paced by the vehicle's own clock, not by an iteration count: over MCP each
+    # iteration is an HTTP round trip covering far less than `dt`.
+    started_at = start.sim_time_s
     state = start
-    while elapsed < timeout_s:
+    elapsed = 0.0
+    for _ in range(MAX_STEPS):
         backend.apply_control(ControlInput(throttle=throttle, brake=0.0, steering=0.0))
         state = backend.read_state()
-        elapsed += dt
+        elapsed = state.sim_time_s - started_at
         if math.dist((state.x_m, state.y_m), origin) >= min_distance_m:
+            break
+        if elapsed >= timeout_s:
             break
 
     backend.apply_control(ControlInput(0.0, 0.0, 0.0))

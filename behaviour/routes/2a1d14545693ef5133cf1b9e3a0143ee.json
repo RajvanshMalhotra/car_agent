@@ -1,0 +1,89 @@
+{
+  "provenance": {
+    "description": "a delivery round on an open test surface: short hops between drops, a stop at every drop with the engine idling, tight turns between them, and one longer run back to the depot at the end",
+    "generated_at": "2026-09-07T20:13:12.784603+00:00",
+    "length_m": 595.9734457253855,
+    "model": "deepseek-v4-pro",
+    "prompt_version": 1,
+    "route_hash": "eb79daf7791f356e",
+    "stops": 6
+  },
+  "spec": {
+    "name": "Five-Drop Delivery Round with Idling Stops",
+    "segments": [
+      {
+        "length_m": 30,
+        "type": "straight"
+      },
+      {
+        "duration_s": 20,
+        "type": "stop"
+      },
+      {
+        "angle_deg": 90,
+        "radius_m": 8,
+        "type": "turn"
+      },
+      {
+        "length_m": 25,
+        "type": "straight"
+      },
+      {
+        "duration_s": 20,
+        "type": "stop"
+      },
+      {
+        "angle_deg": -90,
+        "radius_m": 8,
+        "type": "turn"
+      },
+      {
+        "length_m": 25,
+        "type": "straight"
+      },
+      {
+        "duration_s": 20,
+        "type": "stop"
+      },
+      {
+        "angle_deg": 90,
+        "radius_m": 8,
+        "type": "turn"
+      },
+      {
+        "length_m": 25,
+        "type": "straight"
+      },
+      {
+        "duration_s": 20,
+        "type": "stop"
+      },
+      {
+        "angle_deg": -90,
+        "radius_m": 8,
+        "type": "turn"
+      },
+      {
+        "length_m": 25,
+        "type": "straight"
+      },
+      {
+        "duration_s": 20,
+        "type": "stop"
+      },
+      {
+        "angle_deg": 90,
+        "radius_m": 10,
+        "type": "turn"
+      },
+      {
+        "length_m": 400,
+        "type": "straight"
+      },
+      {
+        "duration_s": 30,
+        "type": "stop"
+      }
+    ]
+  }
+}

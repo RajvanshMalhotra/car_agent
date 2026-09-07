@@ -100,7 +100,10 @@ def test_a_stationary_vehicle_does_not_turn_when_steered():
 
 
 def test_yaw_rate_follows_the_bicycle_model():
-    backend = FakeBackend(wheelbase_m=2.7, max_steer_rad=0.5)
+    # Held at full lock, so the rack rate is not what is under test here.
+    backend = FakeBackend(
+        wheelbase_m=2.7, max_steer_rad=0.5, max_steer_rate_rad_per_s=None
+    )
     backend.reset()
     backend.state.speed_mps = 10.0
     backend.apply_control(ControlInput(0.0, 0.0, 1.0))
@@ -205,3 +208,42 @@ def test_the_ambient_temperature_reaches_the_engine_bay():
         return drive(backend, ControlInput(0.3, 0.0, 0.0), seconds=900.0).underbonnet_temp_c
 
     assert bay_after(45.0) > bay_after(5.0) + 20.0
+
+
+# --- steering rack -------------------------------------------------------
+
+
+def test_the_steering_rack_cannot_snap_to_full_lock_instantly():
+    # A real rack takes about a second lock to lock. Without this limit the
+    # model makes aggressive gains free, and flatters controllers that would
+    # oscillate on a real car.
+    backend = FakeBackend(dt=0.02, max_steer_rate_rad_per_s=1.0, max_steer_rad=0.5)
+    backend.reset()
+    backend.state.speed_mps = 10.0
+    backend.apply_control(ControlInput(0.0, 0.0, 1.0))
+    assert backend.steer_rad == pytest.approx(0.02, abs=1e-6)
+
+
+def test_the_steering_reaches_full_lock_if_held():
+    backend = FakeBackend(dt=0.02, max_steer_rate_rad_per_s=1.0, max_steer_rad=0.5)
+    backend.reset()
+    backend.state.speed_mps = 10.0
+    drive(backend, ControlInput(0.0, 0.0, 1.0), seconds=2.0)
+    assert backend.steer_rad == pytest.approx(0.5, abs=1e-6)
+
+
+def test_the_steering_returns_to_centre_at_the_same_rate():
+    backend = FakeBackend(dt=0.02, max_steer_rate_rad_per_s=1.0, max_steer_rad=0.5)
+    backend.reset()
+    backend.state.speed_mps = 10.0
+    drive(backend, ControlInput(0.0, 0.0, 1.0), seconds=2.0)
+    drive(backend, ControlInput(0.0, 0.0, 0.0), seconds=2.0)
+    assert backend.steer_rad == pytest.approx(0.0, abs=1e-6)
+
+
+def test_a_rack_rate_can_be_disabled_for_the_ideal_case():
+    backend = FakeBackend(dt=0.02, max_steer_rate_rad_per_s=None, max_steer_rad=0.5)
+    backend.reset()
+    backend.state.speed_mps = 10.0
+    backend.apply_control(ControlInput(0.0, 0.0, 1.0))
+    assert backend.steer_rad == pytest.approx(0.5)

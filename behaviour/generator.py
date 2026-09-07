@@ -180,3 +180,116 @@ class BehaviourGenerator:
             f"no valid BehaviourSpec after {self.max_attempts} attempts for "
             f"{description!r}; last rejection: {failures[-1]}"
         )
+
+
+ROUTE_PROMPT_VERSION = 1
+
+ROUTE_SYSTEM_PROMPT = """\
+You design driving routes as a sequence of manoeuvres, for a car in a simulator
+on an open, empty surface. There are no roads, no obstacles and no other
+traffic: the route is whatever you design, and the car will follow it exactly.
+
+Return one JSON object: {"name": "...", "segments": [ ... ]}.
+
+Each segment is one of:
+  {"type": "straight", "length_m": 5 to 2000}
+  {"type": "turn",     "radius_m": 5 to 500, "angle_deg": -180 to 180}
+  {"type": "stop",     "duration_s": 1 to 600}
+
+A positive angle_deg turns left, negative turns right. Turns smaller than 5
+degrees are rejected. A stop covers no distance -- the car halts where it is,
+waits, then carries on.
+
+What the route is for: these runs measure how driving patterns age a 12 V
+lead-acid starter battery in a petrol or diesel car. What matters is engine
+heat and trip structure, so **stops are the most valuable thing you can
+include**: every stop means braking, idling with the engine hot, and then
+re-accelerating. A route that is one long straight teaches nothing.
+
+Design deliberately. A delivery round really is short hops with frequent stops
+and tight turns; a motorway commute really is long straights with gentle curves
+and almost no stopping. Match the description you are given, and use between 8
+and 40 segments.\
+"""
+
+
+class RouteGenerator:
+    """Same discipline as BehaviourGenerator: offline, validated, cached."""
+
+    def __init__(
+        self,
+        client: LLMClient,
+        cache_dir: Path | str,
+        model: str | None = None,
+        prompt_version: int = ROUTE_PROMPT_VERSION,
+        max_attempts: int = 3,
+    ) -> None:
+        self.client = client
+        self.cache = SpecCache(cache_dir)
+        self.model = model or getattr(client, "model", FALLBACK_MODEL)
+        self.prompt_version = prompt_version
+        self.max_attempts = max_attempts
+
+    def cache_key(self, description: str) -> str:
+        payload = json.dumps(
+            {
+                "kind": "route",
+                "description": description,
+                "model": self.model,
+                "prompt_version": self.prompt_version,
+            },
+            sort_keys=True,
+        )
+        return hashlib.sha256(payload.encode()).hexdigest()[:32]
+
+    def generate(self, description: str):
+        from behaviour.route_spec import RouteSpec, RouteValidationError
+
+        key = self.cache_key(description)
+        cached = self.cache.get(key)
+        if cached is not None:
+            return RouteSpec.from_dict(cached)
+
+        request = f"Design this route:\n\n{description}"
+        schema = {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string"},
+                "segments": {"type": "array", "items": {"type": "object"}},
+            },
+            "required": ["name", "segments"],
+        }
+        failures = []
+        for _ in range(self.max_attempts):
+            answer = self.client.complete_json(
+                system=ROUTE_SYSTEM_PROMPT, user=request, schema=schema
+            )
+            try:
+                route = RouteSpec.from_dict(answer)
+            except (RouteValidationError, KeyError, TypeError) as error:
+                failures.append(str(error))
+                request = (
+                    f"Design this route:\n\n{description}\n\n"
+                    f"Your previous answer was rejected: {error}\n"
+                    "Return the whole object again with those segments corrected."
+                )
+                continue
+
+            self.cache.put(
+                key,
+                route.to_dict(),
+                provenance={
+                    "description": description,
+                    "model": self.model,
+                    "prompt_version": self.prompt_version,
+                    "route_hash": route.route_hash,
+                    "length_m": route.to_path().length_m,
+                    "stops": len(route.stops()),
+                },
+            )
+            return route
+
+        raise BehaviourGenerationError(
+            f"no valid RouteSpec after {self.max_attempts} attempts for "
+            f"{description!r}; last rejection: {failures[-1]}"
+        )

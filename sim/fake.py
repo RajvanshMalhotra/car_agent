@@ -19,6 +19,7 @@ class FakeBackend(SimBackend):
         dt: float = 0.02,
         wheelbase_m: float = 2.7,
         max_steer_rad: float = 0.5,
+        max_steer_rate_rad_per_s: float | None = 1.0,
         max_accel_mps2: float = 3.0,
         max_decel_mps2: float = 8.0,
         rolling_drag: float = 0.02,
@@ -30,6 +31,11 @@ class FakeBackend(SimBackend):
         self.dt = dt
         self.wheelbase_m = wheelbase_m
         self.max_steer_rad = max_steer_rad
+        # A real steering rack takes about a second lock to lock. Without this
+        # the model makes aggressive gains free and flatters controllers that
+        # would oscillate on a real car.
+        self.max_steer_rate_rad_per_s = max_steer_rate_rad_per_s
+        self.steer_rad = 0.0
         self.max_accel_mps2 = max_accel_mps2
         self.max_decel_mps2 = max_decel_mps2
         self.rolling_drag = rolling_drag
@@ -52,7 +58,13 @@ class FakeBackend(SimBackend):
 
         # Pose integrates on the speed at the start of the step, so yaw rate is
         # exactly v/L * tan(delta) for the reported speed.
-        steer_rad = control.steering * self.max_steer_rad
+        demanded = control.steering * self.max_steer_rad
+        if self.max_steer_rate_rad_per_s is None:
+            self.steer_rad = demanded
+        else:
+            step = self.max_steer_rate_rad_per_s * self.dt
+            self.steer_rad += min(step, max(-step, demanded - self.steer_rad))
+        steer_rad = self.steer_rad
         state.x_m += speed * math.cos(state.heading_rad) * self.dt
         state.y_m += speed * math.sin(state.heading_rad) * self.dt
         state.heading_rad += speed / self.wheelbase_m * math.tan(steer_rad) * self.dt
@@ -81,6 +93,7 @@ class FakeBackend(SimBackend):
         return self.state.snapshot()
 
     def reset(self) -> VehicleState:
+        self.steer_rad = 0.0
         self.engine = EngineModel(self.ambient_temp_c, cold_start=self.cold_start)
         self.engine.start()
         self.state = self._fresh_state()

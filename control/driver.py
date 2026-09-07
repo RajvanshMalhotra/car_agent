@@ -51,6 +51,9 @@ STOP_MARGIN_M = 2.0
 #: planning on the full limit overshoots the stop point by metres.
 STOP_DECEL_RESERVE = 0.5
 
+#: A waypoint counts as reached once the car is within this of it and stopped.
+STOP_REACHED_M = 8.0
+
 
 class Driver:
     def __init__(
@@ -66,6 +69,8 @@ class Driver:
         max_decel_mps2: float = 8.0,
         max_deviation_m: float = DEFAULT_MAX_DEVIATION_M,
         lost_grace_m: float = DEFAULT_LOST_GRACE_M,
+        stops: "Sequence[Any] | None" = None,
+        gains: "Any | None" = None,
     ) -> None:
         self.spec = spec
         self.path = path
@@ -76,10 +81,29 @@ class Driver:
         self.max_deviation_m = max_deviation_m
         self.lost_grace_m = lost_grace_m
         self.travelled_m = 0.0
+        # Waypoint stops: what produces idle time, braking and re-acceleration.
+        # Without them `idle_fraction` is recorded in the spec and never happens.
+        self.stops = list(stops or [])
+        self.stop_index = 0
+        self.waiting_until_s: float | None = None
         self._previous_position: tuple[float, float] | None = None
 
-        self.steering_controller = PurePursuit(wheelbase_m, max_steer_rad)
-        self.speed_controller = PID(kp=0.8, ki=0.15, kd=0.02, integral_limit=4.0)
+        # Gains default to the hand-tuned passenger-car values; `control.tuner`
+        # learns better ones for a vehicle whose limits differ.
+        if gains is None:
+            from control.tuner import ControllerGains
+
+            gains = ControllerGains.default()
+        self.gains = gains
+        self.steering_controller = PurePursuit(
+            wheelbase_m,
+            max_steer_rad,
+            lookahead_gain_s=gains.lookahead_gain_s,
+            min_lookahead_m=gains.min_lookahead_m,
+        )
+        self.speed_controller = PID(
+            kp=gains.kp, ki=gains.ki, kd=gains.kd, integral_limit=4.0
+        )
         self.rng = random.Random(seed)
 
         self.lag_steps = int(round(spec.reaction_lag_s / dt))
@@ -132,6 +156,27 @@ class Driver:
         self.wander = min(2.0, max(-2.0, self.wander))
         return 1.0 + WANDER_SCALE * self.spec.erraticness * self.wander
 
+    def _next_stop(self):
+        """The stop the vehicle is still working towards, if any."""
+        if self.stop_index < len(self.stops):
+            return self.stops[self.stop_index]
+        return None
+
+    def _update_stop(self, arc_length_m: float, state: VehicleState) -> None:
+        stop = self._next_stop()
+        if stop is None:
+            return
+        reached = (
+            arc_length_m >= stop.arc_length_m - STOP_REACHED_M
+            and state.speed_mps < 0.5
+        )
+        if self.waiting_until_s is None:
+            if reached:
+                self.waiting_until_s = state.sim_time_s + stop.duration_s
+        elif state.sim_time_s >= self.waiting_until_s:
+            self.waiting_until_s = None
+            self.stop_index += 1
+
     def _target_speed_mps(self, arc_length_m: float) -> float:
         arc_length = arc_length_m
         target = self.speed_limit_mps * self.spec.target_speed_factor
@@ -140,7 +185,12 @@ class Driver:
 
         # Bleed off speed so the vehicle arrives at the route end stopped,
         # using this behaviour's own comfortable deceleration.
-        remaining = max(0.0, self.path.length_m - arc_length - STOP_MARGIN_M)
+        # Whichever comes first: the next waypoint stop, or the route end.
+        stop_at = self.path.length_m
+        stop = self._next_stop()
+        if stop is not None:
+            stop_at = min(stop_at, stop.arc_length_m)
+        remaining = max(0.0, stop_at - arc_length - STOP_MARGIN_M)
         planned_decel = STOP_DECEL_RESERVE * self.spec.decel_limit_mps2
         target = min(target, math.sqrt(2 * planned_decel * remaining))
         return max(0.0, target)
@@ -162,7 +212,11 @@ class Driver:
         self.decision_progress_m = self.path.closest_arc_length(
             (decision.x_m, decision.y_m), near_arc_length=self.decision_progress_m
         )
-        target_speed = self._target_speed_mps(self.decision_progress_m)
+        self._update_stop(self.progress_m, state)
+        if self.waiting_until_s is not None:
+            target_speed = 0.0
+        else:
+            target_speed = self._target_speed_mps(self.decision_progress_m)
 
         effort = self.speed_controller.update(
             error=target_speed - decision.speed_mps, dt=self.dt
@@ -219,6 +273,8 @@ class Driver:
         )
         # The route counts as done once the vehicle is stopped inside the
         # planned stopping margin -- it deliberately never reaches the end.
+        if self._next_stop() is not None:
+            return False  # still stops to make
         return (
             arc_length >= self.path.length_m - (STOP_MARGIN_M + 1.0)
             and state.speed_mps < 0.5
