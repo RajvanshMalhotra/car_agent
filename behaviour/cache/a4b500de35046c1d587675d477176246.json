@@ -1,0 +1,26 @@
+{
+  "provenance": {
+    "description": "a retired schoolteacher in Norway, one careful 3 km trip to the shops on a winter morning, engine never fully warms up",
+    "generated_at": "2026-09-07T17:19:48.174712+00:00",
+    "model": "deepseek-v4-pro",
+    "prompt_version": 1,
+    "spec_hash": "86b5d5f46948c0e7"
+  },
+  "spec": {
+    "accel_limit_mps2": 1.0,
+    "ambient_temp_c": -8.0,
+    "cold_start": true,
+    "corner_speed_factor": 0.6,
+    "decel_limit_mps2": 1.5,
+    "erraticness": 0.1,
+    "following_distance_s": 3.0,
+    "hvac_setting": 0.8,
+    "idle_fraction": 0.15,
+    "jerk_limit_mps3": 1.0,
+    "name": "Retired schoolteacher Norway winter short trip",
+    "reaction_lag_s": 1.0,
+    "start_stop_enabled": false,
+    "target_speed_factor": 0.8,
+    "trip_duration_s": 600.0
+  }
+}

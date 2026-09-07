@@ -1,0 +1,26 @@
+{
+  "provenance": {
+    "description": "a motorway commuter, 45 minutes each way on an open dual carriageway, mild spring weather",
+    "generated_at": "2026-09-07T17:20:15.231490+00:00",
+    "model": "deepseek-v4-pro",
+    "prompt_version": 1,
+    "spec_hash": "1012607f4e15928b"
+  },
+  "spec": {
+    "accel_limit_mps2": 2.0,
+    "ambient_temp_c": 15.0,
+    "cold_start": true,
+    "corner_speed_factor": 1.0,
+    "decel_limit_mps2": 2.5,
+    "erraticness": 0.1,
+    "following_distance_s": 2.0,
+    "hvac_setting": 0.0,
+    "idle_fraction": 0.05,
+    "jerk_limit_mps3": 2.0,
+    "name": "Motorway commuter, mild spring",
+    "reaction_lag_s": 0.7,
+    "start_stop_enabled": true,
+    "target_speed_factor": 1.05,
+    "trip_duration_s": 2700.0
+  }
+}

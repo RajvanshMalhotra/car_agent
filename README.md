@@ -1,0 +1,140 @@
+# car_agent
+
+Generate diverse, physics-constrained driving data in BeamNG to study how driving
+and trip patterns age a **12 V lead-acid starter battery** in a combustion car.
+
+An LLM turns plain English ("a delivery courier in Delhi in summer") into a
+bounds-checked parameter set; a classical controller drives that behaviour; the
+resulting engine and thermal traces feed a battery ageing layer.
+
+---
+
+## If you are running this on the Windows machine with BeamNG
+
+You need **BeamNG.drive**, Python 3.10+, and about ten minutes.
+
+### 1. Install
+
+```
+git clone <this repo>
+cd car_agent
+py -m pip install vgamepad
+```
+
+`vgamepad` needs the **ViGEmBus** driver. If it is not already installed, get it
+from https://github.com/nefarius/ViGEmBus/releases and reboot.
+
+There is no API key needed for anything below — three behaviours are already
+generated and cached in `behaviour/cache/`.
+
+### 2. Turn on BeamNG's telemetry
+
+In BeamNG: **Options → Others** (some builds call it *Protocols*), enable both:
+
+- **OutGauge** — engine channels. Target `127.0.0.1`, port `4444`.
+- **Motion Sim / OutSim** — position and heading. Target `127.0.0.1`, port `4445`.
+
+Menu names vary by build. If you cannot find them, carry on to step 3 anyway —
+the probe will tell us what is actually being emitted.
+
+> **Both are required.** OutGauge carries no position, so the car cannot be
+> steered along a route without OutSim.
+
+### 3. Run the probe first
+
+Spawn a vehicle on a road, then:
+
+```
+py windows_probe.py
+```
+
+It is safe — it never drives the car. It will:
+
+1. create a virtual Xbox pad and sweep the steering for 3 s (watch the front
+   wheels — if they do not move, BeamNG is not binding the virtual pad, check
+   Options → Controls)
+2. listen on 4444 and 4445 for 20 s and decode whatever arrives
+
+**Send the whole output back.** If the packets do not match the expected layouts
+it prints sizes and raw floats, which is enough to fix the decoder in one pass.
+
+### 4. Drive a behaviour
+
+```
+py windows_drive.py --list
+py windows_drive.py "Delhi Courier" --seconds 300
+```
+
+Press **Ctrl+R** in game first to reset the vehicle. The script releases throttle
+and brake on exit, including on Ctrl+C. If it ever loses control: Ctrl+C, then
+Ctrl+R in game.
+
+Output lands in `runs/`:
+
+- `<timestamp>_<spec_hash>.csv` — 1 Hz: pose, speed, RPM, coolant, under-bonnet
+  temperature, oil, gear, fuel, crank count, idling flag, actual **and**
+  commanded pedals
+- `<timestamp>_<spec_hash>.json` — the behaviour spec, ambient temperature,
+  seed, scenario, and a summary including corrosion in equivalent-hours
+
+---
+
+## Developing without the game
+
+Everything except `windows_*.py` runs anywhere, against a kinematic fake backend:
+
+```
+python3 -m pytest -q        # 208 tests, ~19 s, no network, no game
+./agent.py list
+./agent.py drive "Delhi Courier"
+```
+
+Generating new behaviours needs a DeepSeek key:
+
+```
+export DEEPSEEK_API_KEY=...
+./agent.py generate "a taxi driver in Cairo, 12 hour shifts, engine never off"
+```
+
+---
+
+## Layout
+
+| Path | What |
+|---|---|
+| `behaviour/` | `BehaviourSpec` + bounds gate, LLM generator, disk cache, DeepSeek client |
+| `control/` | Path, pure-pursuit steering, PID speed, the driver that executes a spec |
+| `sim/` | Backend interface, fake kinematic backend, engine/thermal model, OutGauge & OutSim decoding, gamepad+UDP backend |
+| `battery/` | Arrhenius grid-corrosion estimator |
+| `datalog/` | CSV writer + provenance sidecar |
+| `campaign/` | *(empty — sampling and resumable ledger not built)* |
+
+`CLAUDE.md` holds the design decisions and the reasoning behind them. Read it
+before changing anything structural.
+
+---
+
+## What this does and does not do
+
+**Does:** generate and validate behaviours offline; drive them faithfully
+(acceleration, jerk and corner limits respected, ~2 cm path tracking); estimate
+under-bonnet temperature; integrate grid corrosion.
+
+**Does not, yet:**
+
+- No electrical/alternator model, so the **recharge-deficit** ageing pathway
+  produces no data.
+- A run is one trip with one crank, so the **sulfation** pathway produces no
+  data either.
+- `idle_fraction` is recorded but not enforced during a run.
+- Nothing has ever been run against the real game.
+
+**Under-bonnet temperature is estimated, not measured.** Neither BeamNG nor
+OutGauge reports engine bay air temperature. It is modelled from coolant
+temperature, airflow and ambient. The structure is defensible; the coefficients
+are not calibrated against a real engine bay. **Treat ratios between behaviours
+as usable and absolute temperatures as indicative.**
+
+Early result from the model (not validated against reality): with ambient held
+fixed, driving style moves corrosion 1.2–1.5×, while ambient 25 °C → 42 °C moves
+it ~2.9×. Ambient appears to dominate driving style roughly 2:1.

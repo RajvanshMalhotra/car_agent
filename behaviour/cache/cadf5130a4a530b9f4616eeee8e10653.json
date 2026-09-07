@@ -1,0 +1,26 @@
+{
+  "provenance": {
+    "description": "a delivery courier in Delhi in summer, air conditioning always on, constant short hops with the engine idling at every drop",
+    "generated_at": "2026-09-07T17:19:28.286256+00:00",
+    "model": "deepseek-v4-pro",
+    "prompt_version": 1,
+    "spec_hash": "80a41d3337e12972"
+  },
+  "spec": {
+    "accel_limit_mps2": 2.5,
+    "ambient_temp_c": 42.0,
+    "cold_start": true,
+    "corner_speed_factor": 0.9,
+    "decel_limit_mps2": 4.5,
+    "erraticness": 0.7,
+    "following_distance_s": 0.7,
+    "hvac_setting": 1.0,
+    "idle_fraction": 0.5,
+    "jerk_limit_mps3": 7.0,
+    "name": "Delhi Courier Summer",
+    "reaction_lag_s": 0.5,
+    "start_stop_enabled": false,
+    "target_speed_factor": 1.1,
+    "trip_duration_s": 1800.0
+  }
+}

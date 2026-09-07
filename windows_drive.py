@@ -1,0 +1,157 @@
+#!/usr/bin/env python3
+"""Drive a cached behaviour in BeamNG on the Windows machine, and log it.
+
+Run `windows_probe.py` FIRST and make sure it reports a working gamepad and
+both telemetry streams. Then:
+
+    py windows_drive.py --list
+    py windows_drive.py "Delhi Courier" --seconds 300
+
+What it does: reads the behaviour spec from disk (no network), drives the car
+with the same controller the fake backend uses, and writes a 1 Hz CSV log with
+the channels the battery layer needs.
+
+Before you start:
+  * spawn a vehicle and put it on a road
+  * press Ctrl+R in game to reset it to a clean state
+  * the script drives a straight-ahead route by default -- see --route
+
+SAFETY: the script releases throttle and brake on exit, including on Ctrl+C.
+If it ever loses control of the car, Ctrl+C then press Ctrl+R in game.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import math
+import sys
+import time
+from pathlib import Path as FilePath
+
+sys.path.insert(0, str(FilePath(__file__).parent))
+
+from behaviour.spec import BehaviourSpec  # noqa: E402
+from datalog.writer import RunLog  # noqa: E402
+from control.driver import Driver  # noqa: E402
+from control.path import Path  # noqa: E402
+from sim.backend import ControlInput  # noqa: E402
+from sim.gamepad_udp import GamepadUDPBackend  # noqa: E402
+
+CACHE_DIR = FilePath(__file__).parent / "behaviour" / "cache"
+LOG_DIR = FilePath(__file__).parent / "runs"
+
+
+def load_specs() -> list[BehaviourSpec]:
+    return [
+        BehaviourSpec.from_dict(json.loads(p.read_text())["spec"])
+        for p in sorted(CACHE_DIR.glob("*.json"))
+    ]
+
+
+def straight_route(length_m: float = 3000.0) -> Path:
+    return Path([(float(i), 0.0) for i in range(int(length_m) + 1)])
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("behaviour", nargs="?", help="spec_hash or part of the name")
+    parser.add_argument("--list", action="store_true")
+    parser.add_argument("--seconds", type=float, default=300.0)
+    parser.add_argument("--speed-limit", type=float, default=20.0)
+    parser.add_argument("--rate", type=float, default=50.0, help="control loop Hz")
+    parser.add_argument("--log-hz", type=float, default=1.0)
+    parser.add_argument("--outgauge-port", type=int, default=4444)
+    parser.add_argument("--outsim-port", type=int, default=4445)
+    parser.add_argument("--route-length", type=float, default=3000.0)
+    parser.add_argument("--seed", type=int, default=0)
+    args = parser.parse_args()
+
+    specs = load_specs()
+    if args.list or not args.behaviour:
+        for spec in specs:
+            print(f"{spec.spec_hash}  {spec.name}")
+        return 0
+
+    matches = [
+        s for s in specs
+        if args.behaviour == s.spec_hash or args.behaviour.lower() in s.name.lower()
+    ]
+    if not matches:
+        print(f"no cached behaviour matching {args.behaviour!r}", file=sys.stderr)
+        return 1
+    spec = matches[0]
+
+    route = straight_route(args.route_length)
+    dt = 1.0 / args.rate
+    backend = GamepadUDPBackend(
+        ambient_temp_c=spec.ambient_temp_c,
+        cold_start=spec.cold_start,
+        outgauge_port=args.outgauge_port,
+        outsim_port=args.outsim_port,
+    )
+    driver = Driver(spec, route, dt=dt, speed_limit_mps=args.speed_limit, seed=args.seed)
+
+    log_path = LOG_DIR / f"{time.strftime('%Y%m%d-%H%M%S')}_{spec.spec_hash}.csv"
+    print(f"behaviour : {spec.name}  [{spec.spec_hash}]")
+    print(f"log       : {log_path}")
+    print(f"route     : {route.length_m:.0f} m, limit {args.speed_limit} m/s")
+    print("Ctrl+C to stop. Controls are released on exit.\n")
+
+    started = time.monotonic()
+    next_log = 0.0
+    log_interval = 1.0 / args.log_hz
+    log = RunLog(
+        log_path,
+        spec=spec,
+        scenario=f"straight-{args.route_length:.0f}m@{args.speed_limit:.0f}mps",
+        seed=args.seed,
+        log_hz=args.log_hz,
+    )
+
+    try:
+        with log:
+            while True:
+                loop_start = time.monotonic()
+                elapsed = loop_start - started
+                if elapsed >= args.seconds:
+                    break
+
+                state = backend.read_state()
+                control = driver.step(state)
+                backend.apply_control(control)
+
+                if elapsed >= next_log:
+                    next_log += log_interval
+                    log.record(state, control)
+                    if log.rows % 10 == 0:
+                        print(f"  t={elapsed:6.1f}s  v={state.speed_mps:5.2f} m/s  "
+                              f"rpm={state.rpm:6.0f}  coolant={state.coolant_temp_c:5.1f}C  "
+                              f"bay={state.underbonnet_temp_c:5.1f}C")
+
+                sleep_for = dt - (time.monotonic() - loop_start)
+                if sleep_for > 0:
+                    time.sleep(sleep_for)
+    except KeyboardInterrupt:
+        print("\ninterrupted")
+    finally:
+        backend.apply_control(ControlInput(0.0, 0.0, 0.0))
+        backend.close()
+
+    summary = log.summary()
+    if summary["rows"]:
+        print(f"\n{summary['rows']} rows -> {log_path}")
+        print(f"  metadata         -> {log.sidecar_path}")
+        print(f"  idle fraction    {summary['idle_fraction']:.2f} "
+              f"(behaviour asked for {spec.idle_fraction:.2f})")
+        print(f"  bay temperature  mean {summary['mean_underbonnet_c']:.1f} C  "
+              f"max {summary['max_underbonnet_c']:.1f} C")
+        print(f"  corrosion        {summary['equivalent_hours']:.3f} equivalent-hours "
+              f"at {summary['equivalent_hours_reference_c']:.0f} C")
+    else:
+        print("\nNo telemetry received - run windows_probe.py to diagnose.")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
