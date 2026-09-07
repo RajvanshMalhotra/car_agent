@@ -31,14 +31,15 @@ generated and cached in `behaviour/cache/`.
 
 In BeamNG: **Options → Others** (some builds call it *Protocols*), enable both:
 
-- **OutGauge** — engine channels. Target `127.0.0.1`, port `4444`.
-- **Motion Sim / OutSim** — position and heading. Target `127.0.0.1`, port `4445`.
+- **OutGauge** — engine channels (speed, RPM, coolant, pedals).
+- **Motion Sim** — position and orientation.
 
-Menu names vary by build. If you cannot find them, carry on to step 3 anyway —
-the probe will tell us what is actually being emitted.
+Point both at `127.0.0.1`. **They may share a port** — BeamNG commonly sends
+both to `4444`, and that works fine: datagrams are routed by content, not by
+port. OutGauge arrives as 96 bytes, Motion Sim as 88 bytes tagged `BNG1`.
 
-> **Both are required.** OutGauge carries no position, so the car cannot be
-> steered along a route without OutSim.
+> **Both are required.** OutGauge carries no position at all, so the car cannot
+> be steered along a route without Motion Sim.
 
 ### 3. Run the probe first
 
@@ -63,9 +64,10 @@ it prints sizes and raw floats, which is enough to fix the decoder in one pass.
 ```
 py windows_drive.py --list
 py windows_drive.py "Delhi Courier" --seconds 300
+py windows_drive.py "Delhi Courier" --ports 4444     # if both streams share 4444
 ```
 
-Press **Ctrl+R** in game first to reset the vehicle. The script releases throttle
+Put the car **in gear** (not neutral) and press **Ctrl+R** in game first to reset the vehicle. The script releases throttle
 and brake on exit, including on Ctrl+C. If it ever loses control: Ctrl+C, then
 Ctrl+R in game.
 
@@ -104,7 +106,7 @@ export DEEPSEEK_API_KEY=...
 |---|---|
 | `behaviour/` | `BehaviourSpec` + bounds gate, LLM generator, disk cache, DeepSeek client |
 | `control/` | Path, pure-pursuit steering, PID speed, the driver that executes a spec |
-| `sim/` | Backend interface, fake kinematic backend, engine/thermal model, OutGauge & OutSim decoding, gamepad+UDP backend |
+| `sim/` | Backend interface, fake kinematic backend, engine/thermal model, OutGauge / MotionSim / OutSim decoding, gamepad+UDP backend |
 | `battery/` | Arrhenius grid-corrosion estimator |
 | `datalog/` | CSV writer + provenance sidecar |
 | `campaign/` | *(empty — sampling and resumable ledger not built)* |

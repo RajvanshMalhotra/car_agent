@@ -5,6 +5,7 @@ engine channels; it carries **no position**, so pose for path following has to
 come from OutSim. Parsing is pure and fully testable without the game.
 """
 
+import math
 import struct
 
 import pytest
@@ -97,3 +98,92 @@ def test_an_outsim_packet_of_the_wrong_size_is_rejected():
 def test_the_two_formats_have_distinguishable_lengths():
     # The probe on the Windows machine identifies a stream by packet length.
     assert struct.calcsize(OUTGAUGE_LAYOUT) != struct.calcsize(OUTSIM_LAYOUT)
+
+
+# --- BeamNG MotionSim -----------------------------------------------------
+
+from sim.telemetry import MOTIONSIM_LAYOUT, MOTIONSIM_MAGIC, MotionSimPacket  # noqa: E402
+
+
+def motionsim_bytes(pos=(29.1, -368.0, 128.0), vel=(0.0, 0.0, 0.0), yaw=0.3,
+                    magic=MOTIONSIM_MAGIC):
+    return struct.pack(
+        MOTIONSIM_LAYOUT, magic, *pos, *vel, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+        0.0, 0.0, yaw, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    )
+
+
+def test_the_motionsim_packet_is_eighty_eight_bytes():
+    assert struct.calcsize(MOTIONSIM_LAYOUT) == 88
+
+
+def test_the_motionsim_magic_is_bng1():
+    # Observed on the wire as float 2.9e-09, which is the bytes "BNG1".
+    assert MOTIONSIM_MAGIC == b"BNG1"
+    assert struct.unpack("<f", MOTIONSIM_MAGIC)[0] == pytest.approx(2.9e-09, rel=0.01)
+
+
+def test_motionsim_decodes_position():
+    packet = MotionSimPacket.parse(motionsim_bytes(pos=(595.0, -233.0, 147.0)))
+    assert (packet.x_m, packet.y_m, packet.z_m) == pytest.approx((595.0, -233.0, 147.0))
+
+
+def test_motionsim_decodes_the_velocity_vector():
+    packet = MotionSimPacket.parse(motionsim_bytes(vel=(-4.89, -1.37, 0.076)))
+    assert packet.speed_mps == pytest.approx(math.hypot(4.89, 1.37), rel=1e-3)
+
+
+def test_heading_comes_from_the_velocity_vector_while_moving():
+    # Velocity is guaranteed to share the frame the positions are in; the sign
+    # and zero convention of yawPos is not documented, and getting it wrong
+    # inverts the steering.
+    packet = MotionSimPacket.parse(motionsim_bytes(vel=(0.0, 10.0, 0.0), yaw=99.0))
+    assert packet.heading_rad == pytest.approx(math.pi / 2)
+
+
+def test_heading_falls_back_to_yaw_when_almost_stationary():
+    packet = MotionSimPacket.parse(motionsim_bytes(vel=(0.01, 0.0, 0.0), yaw=1.1))
+    assert packet.heading_rad == pytest.approx(1.1)
+
+
+def test_the_reported_yaw_is_kept_so_the_two_can_be_compared():
+    packet = MotionSimPacket.parse(motionsim_bytes(vel=(10.0, 0.0, 0.0), yaw=1.1))
+    assert packet.yaw_rad == pytest.approx(1.1)
+    assert packet.heading_rad == pytest.approx(0.0)
+
+
+def test_a_packet_without_the_magic_is_rejected():
+    with pytest.raises(TelemetryError, match="BNG1"):
+        MotionSimPacket.parse(motionsim_bytes(magic=b"XXXX"))
+
+
+def test_a_motionsim_packet_of_the_wrong_size_is_rejected():
+    with pytest.raises(TelemetryError, match="bytes"):
+        MotionSimPacket.parse(b"BNG1" + b"\x00" * 40)
+
+
+# --- demultiplexing -------------------------------------------------------
+
+from sim.telemetry import identify  # noqa: E402
+
+
+def test_a_motionsim_datagram_is_identified():
+    assert identify(motionsim_bytes()) == "motionsim"
+
+
+def test_an_outgauge_datagram_is_identified():
+    assert identify(outgauge_bytes()) == "outgauge"
+
+
+def test_an_outgauge_datagram_with_a_trailing_id_is_identified():
+    # This is what BeamNG actually sends: 96 bytes, not 92.
+    assert identify(outgauge_bytes(with_id=True)) == "outgauge"
+
+
+def test_an_unrecognised_datagram_is_reported_as_unknown():
+    assert identify(b"nonsense") is None
+
+
+def test_motionsim_is_not_confused_with_outgauge():
+    # Both arrive on the same port in practice, so this is the whole game.
+    assert identify(motionsim_bytes()) != identify(outgauge_bytes(with_id=True))

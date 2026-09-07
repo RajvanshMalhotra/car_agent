@@ -31,11 +31,11 @@ import time
 sys.path.insert(0, str(__import__("pathlib").Path(__file__).parent))
 
 from sim.telemetry import (  # noqa: E402
-    OUTGAUGE_SIZE,
-    OUTSIM_SIZE,
+    MotionSimPacket,
     OutGaugePacket,
     OutSimPacket,
     TelemetryError,
+    identify,
 )
 
 
@@ -70,25 +70,28 @@ def check_gamepad() -> bool:
 
 
 def describe(data: bytes) -> str:
-    if len(data) in (OUTGAUGE_SIZE, OUTGAUGE_SIZE + 4):
-        try:
+    kind = identify(data)
+    try:
+        if kind == "outgauge":
             p = OutGaugePacket.parse(data)
-            return (f"OutGauge  speed {p.speed_mps:6.2f} m/s  rpm {p.rpm:7.1f}  "
+            return (f"OutGauge   speed {p.speed_mps:6.2f} m/s  rpm {p.rpm:7.1f}  "
                     f"coolant {p.coolant_temp_c:5.1f}C  oil {p.oil_temp_c:5.1f}C  "
                     f"thr {p.throttle:4.2f}  brk {p.brake:4.2f}  gear {p.gear}")
-        except TelemetryError as error:
-            return f"OutGauge-sized but would not decode: {error}"
-    if len(data) in (OUTSIM_SIZE, OUTSIM_SIZE + 4):
-        try:
+        if kind == "motionsim":
+            p = MotionSimPacket.parse(data)
+            return (f"MotionSim  pos ({p.x_m:9.2f}, {p.y_m:9.2f}, {p.z_m:7.2f})  "
+                    f"speed {p.speed_mps:6.2f} m/s  heading {p.heading_rad:6.3f}  "
+                    f"yaw {p.yaw_rad:6.3f}")
+        if kind == "outsim":
             p = OutSimPacket.parse(data)
-            return (f"OutSim    pos ({p.x_m:9.2f}, {p.y_m:9.2f}, {p.z_m:7.2f})  "
-                    f"heading {p.heading_rad:6.3f} rad  speed {p.speed_mps:6.2f} m/s")
-        except TelemetryError as error:
-            return f"OutSim-sized but would not decode: {error}"
+            return (f"OutSim     pos ({p.x_m:9.2f}, {p.y_m:9.2f}, {p.z_m:7.2f})  "
+                    f"heading {p.heading_rad:6.3f}  speed {p.speed_mps:6.2f} m/s")
+    except TelemetryError as error:
+        return f"{kind}-shaped but would not decode: {error}"
 
     floats = struct.unpack(f"<{len(data)//4}f", data[: len(data) // 4 * 4])
-    return (f"UNKNOWN {len(data)} bytes - first floats: "
-            + " ".join(f"{v:.3g}" for v in floats[:8]))
+    return (f"UNKNOWN {len(data)} bytes  head={data[:4]!r}  floats: "
+            + " ".join(f"{v:.4g}" for v in floats[:10]))
 
 
 def listen(ports: list[int], seconds: float) -> None:
@@ -112,6 +115,7 @@ def listen(ports: list[int], seconds: float) -> None:
 
     counts = {port: 0 for port in sockets}
     sizes = {port: set() for port in sockets}
+    kinds = {port: set() for port in sockets}
     last_print = {port: 0.0 for port in sockets}
     deadline = time.time() + seconds
     while time.time() < deadline:
@@ -122,6 +126,7 @@ def listen(ports: list[int], seconds: float) -> None:
                 continue
             counts[port] += 1
             sizes[port].add(len(data))
+            kinds[port].add(identify(data) or f"unknown-{len(data)}")
             now = time.time()
             if now - last_print[port] > 0.5:
                 last_print[port] = now
@@ -132,9 +137,17 @@ def listen(ports: list[int], seconds: float) -> None:
     for port in sockets:
         if counts[port]:
             print(f"  port {port}: {counts[port]} packets "
-                  f"({counts[port]/seconds:.0f}/s), sizes {sorted(sizes[port])}")
+                  f"({counts[port]/seconds:.0f}/s), sizes {sorted(sizes[port])}, "
+                  f"streams {sorted(kinds[port])}")
         else:
-            print(f"  port {port}: NOTHING RECEIVED")
+            print(f"  port {port}: nothing received (fine if both streams share a port)")
+    found = set().union(*kinds.values()) if kinds else set()
+    if "outgauge" in found and not {"motionsim", "outsim"} & found:
+        print("\n  OutGauge is arriving but no pose stream is. Enable Motion Sim")
+        print("  in BeamNG's protocol options - without pose the car cannot be")
+        print("  steered along a route.")
+    elif found and not any(k.startswith("unknown") for k in found):
+        print("\n  Both streams present and decoding. You are ready to drive.")
     if not any(counts.values()):
         print("\n  No telemetry at all. Check that OutGauge / Motion Sim are enabled")
         print("  in BeamNG's options, that the target IP is 127.0.0.1, and that a")

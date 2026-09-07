@@ -5,7 +5,10 @@ the fake backend, so the controller, behaviour and logging layers are unchanged.
 
 Control goes through a virtual Xbox 360 pad (vgamepad + the ViGEmBus driver)
 because BeamNG.drive has no scripting API -- `beamngpy` needs BeamNG.tech.
-Telemetry comes back over UDP: OutSim for pose, OutGauge for the engine.
+Telemetry comes back over UDP: MotionSim for pose, OutGauge for the engine.
+BeamNG sends both to whichever port each is configured with, and in practice
+that is the same port -- so every configured port is bound and each datagram is
+routed by its content, not by which socket it arrived on.
 
 Under-bonnet temperature is not in either stream, so it is estimated by the same
 `EngineModel` the fake backend uses, driven by the *real* coolant temperature
@@ -19,10 +22,17 @@ import time
 
 from sim.backend import ControlInput, SimBackend, VehicleState
 from sim.engine import EngineModel
-from sim.telemetry import OutGaugePacket, OutSimPacket, TelemetryError
+from sim.telemetry import (
+    MotionSimPacket,
+    OutGaugePacket,
+    OutSimPacket,
+    TelemetryError,
+    identify,
+)
 
-OUTGAUGE_PORT = 4444
-OUTSIM_PORT = 4445
+#: Bind both by default: BeamNG may be configured either way, and binding a
+#: port nothing sends to costs nothing.
+DEFAULT_PORTS = (4444, 4445)
 
 
 class GamepadUDPBackend(SimBackend):
@@ -30,8 +40,7 @@ class GamepadUDPBackend(SimBackend):
         self,
         ambient_temp_c: float = 20.0,
         cold_start: bool = True,
-        outgauge_port: int = OUTGAUGE_PORT,
-        outsim_port: int = OUTSIM_PORT,
+        ports: "tuple[int, ...] | list[int]" = DEFAULT_PORTS,
         gamepad=None,
         bind_host: str = "0.0.0.0",
     ) -> None:
@@ -48,9 +57,10 @@ class GamepadUDPBackend(SimBackend):
         self._start_wall = self._last_read
         self._origin: tuple[float, float] | None = None
 
+        self.unknown_packets = 0
+        self.packet_counts = {"outgauge": 0, "motionsim": 0, "outsim": 0}
         self.gamepad = gamepad if gamepad is not None else self._open_gamepad()
-        self.outgauge = self._bind(bind_host, outgauge_port)
-        self.outsim = self._bind(bind_host, outsim_port)
+        self.sockets = [self._bind(bind_host, port) for port in dict.fromkeys(ports)]
 
     @staticmethod
     def _open_gamepad():
@@ -114,55 +124,60 @@ class GamepadUDPBackend(SimBackend):
         return self.state.snapshot()
 
     def close(self) -> None:
-        for sock in (getattr(self, "outgauge", None), getattr(self, "outsim", None)):
-            if sock is not None:
-                sock.close()
+        for sock in getattr(self, "sockets", []):
+            sock.close()
 
     # -- telemetry --------------------------------------------------------
 
-    def _latest(self, sock: socket.socket) -> bytes | None:
-        """Newest datagram on the socket, discarding any backlog.
+    def _collect(self) -> dict[str, bytes]:
+        """Newest datagram of each kind, across every bound port.
 
         UDP buffers, and a stale pose is worse than none: the controller must
         act on the most recent frame, not work through a queue.
         """
-        newest = None
-        while True:
-            try:
-                newest = sock.recv(4096)
-            except BlockingIOError:
-                return newest
+        newest: dict[str, bytes] = {}
+        for sock in self.sockets:
+            while True:
+                try:
+                    data = sock.recv(4096)
+                except BlockingIOError:
+                    break
+                kind = identify(data)
+                if kind is None:
+                    self.unknown_packets += 1
+                    continue
+                self.packet_counts[kind] += 1
+                newest[kind] = data
+        return newest
 
     def _drain(self) -> None:
         now = time.monotonic()
         dt = max(1e-3, now - self._last_read)
         self._last_read = now
         state = self.state
+        newest = self._collect()
 
-        pose = self._latest(self.outsim)
+        pose = None
+        if "motionsim" in newest:
+            pose = self._safe(MotionSimPacket, newest["motionsim"])
+        elif "outsim" in newest:
+            pose = self._safe(OutSimPacket, newest["outsim"])
         if pose is not None:
-            try:
-                packet = OutSimPacket.parse(pose)
-            except TelemetryError:
-                packet = None
-            if packet is not None:
-                if self._origin is None:
-                    self._origin = (packet.x_m, packet.y_m)
-                state.x_m = packet.x_m - self._origin[0]
-                state.y_m = packet.y_m - self._origin[1]
-                state.heading_rad = packet.heading_rad
-                state.speed_mps = packet.speed_mps
+            if self._origin is None:
+                self._origin = (pose.x_m, pose.y_m)
+            state.x_m = pose.x_m - self._origin[0]
+            state.y_m = pose.y_m - self._origin[1]
+            state.heading_rad = pose.heading_rad
+            state.speed_mps = pose.speed_mps
 
-        engine = self._latest(self.outgauge)
         throttle = 0.0
         measured_coolant: float | None = None
-        if engine is not None:
-            try:
-                packet = OutGaugePacket.parse(engine)
-            except TelemetryError:
-                packet = None
+        if "outgauge" in newest:
+            packet = self._safe(OutGaugePacket, newest["outgauge"])
             if packet is not None:
                 state.rpm = packet.rpm
+                # OutGauge speed is authoritative; the pose stream's velocity
+                # vector is only used for heading.
                 state.speed_mps = packet.speed_mps
                 state.throttle = packet.throttle
                 state.brake = packet.brake
@@ -185,3 +200,11 @@ class GamepadUDPBackend(SimBackend):
         state.engine_on = True
         state.crank_count = self.engine.state.crank_count
         state.sim_time_s = now - self._start_wall
+
+    @staticmethod
+    def _safe(parser, data: bytes):
+        """Parse, or return None. One bad datagram must not end a 10-minute run."""
+        try:
+            return parser.parse(data)
+        except TelemetryError:
+            return None

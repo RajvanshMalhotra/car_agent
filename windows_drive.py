@@ -61,8 +61,8 @@ def main() -> int:
     parser.add_argument("--speed-limit", type=float, default=20.0)
     parser.add_argument("--rate", type=float, default=50.0, help="control loop Hz")
     parser.add_argument("--log-hz", type=float, default=1.0)
-    parser.add_argument("--outgauge-port", type=int, default=4444)
-    parser.add_argument("--outsim-port", type=int, default=4445)
+    parser.add_argument("--ports", type=int, nargs="+", default=[4444, 4445],
+                        help="UDP ports to listen on; both streams may share one")
     parser.add_argument("--route-length", type=float, default=3000.0)
     parser.add_argument("--seed", type=int, default=0)
     args = parser.parse_args()
@@ -87,8 +87,7 @@ def main() -> int:
     backend = GamepadUDPBackend(
         ambient_temp_c=spec.ambient_temp_c,
         cold_start=spec.cold_start,
-        outgauge_port=args.outgauge_port,
-        outsim_port=args.outsim_port,
+        ports=args.ports,
     )
     driver = Driver(spec, route, dt=dt, speed_limit_mps=args.speed_limit, seed=args.seed)
 

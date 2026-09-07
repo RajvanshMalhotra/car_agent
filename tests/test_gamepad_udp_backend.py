@@ -4,6 +4,7 @@ Everything here runs on any OS: only the vgamepad import is Windows-only, and
 that is injected.
 """
 
+import math
 import socket
 import struct
 import time
@@ -12,7 +13,7 @@ import pytest
 
 from sim.backend import ControlInput, SimBackend
 from sim.gamepad_udp import GamepadUDPBackend
-from sim.telemetry import OUTGAUGE_LAYOUT, OUTSIM_LAYOUT
+from sim.telemetry import MOTIONSIM_LAYOUT, MOTIONSIM_MAGIC, OUTGAUGE_LAYOUT, OUTSIM_LAYOUT
 
 OUTGAUGE_PORT = 47444
 OUTSIM_PORT = 47445
@@ -38,13 +39,23 @@ class FakePad:
         self.updates += 1
 
 
+def send_motionsim(x=0.0, y=0.0, vx=0.0, vy=0.0, yaw=0.0, port=OUTGAUGE_PORT):
+    send(
+        struct.pack(
+            MOTIONSIM_LAYOUT, MOTIONSIM_MAGIC, x, y, 120.0, vx, vy, 0.0,
+            0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, yaw,
+            0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        ),
+        port,
+    )
+
+
 @pytest.fixture
 def backend():
     pad = FakePad()
     instance = GamepadUDPBackend(
         ambient_temp_c=30.0,
-        outgauge_port=OUTGAUGE_PORT,
-        outsim_port=OUTSIM_PORT,
+        ports=[OUTGAUGE_PORT, OUTSIM_PORT],
         gamepad=pad,
         bind_host="127.0.0.1",
     )
@@ -171,3 +182,55 @@ def test_read_state_returns_a_snapshot(backend):
 def test_close_is_idempotent(backend):
     backend.close()
     backend.close()
+
+
+# --- both streams on one port (what BeamNG actually does) ------------------
+
+
+def test_motionsim_and_outgauge_are_demultiplexed_on_a_shared_port(backend):
+    # BeamNG sends both to whatever port each is configured with, and in
+    # practice that is the same port. Routing must be by content, not by port.
+    backend.reset()
+    send_motionsim(x=200.0, y=50.0, vx=10.0, vy=0.0, port=OUTGAUGE_PORT)
+    send_outgauge(speed=10.0, rpm=3100.0, coolant=85.3, port=OUTGAUGE_PORT)
+    state = settle(backend)
+    assert state.rpm == pytest.approx(3100.0)
+    assert state.coolant_temp_c == pytest.approx(85.3)
+    assert state.x_m == pytest.approx(0.0, abs=0.01)  # first pose set the origin
+
+
+def test_pose_arrives_from_motionsim(backend):
+    backend.reset()
+    send_motionsim(x=100.0, y=20.0, vx=5.0, vy=0.0)
+    settle(backend)
+    send_motionsim(x=130.0, y=20.0, vx=5.0, vy=0.0)
+    state = settle(backend)
+    assert state.x_m == pytest.approx(30.0, abs=0.01)
+    assert state.y_m == pytest.approx(0.0, abs=0.01)
+
+
+def test_heading_from_motionsim_follows_the_velocity_vector(backend):
+    backend.reset()
+    send_motionsim(vx=0.0, vy=8.0, yaw=99.0)
+    assert settle(backend).heading_rad == pytest.approx(math.pi / 2, abs=1e-3)
+
+
+def test_a_single_port_is_enough(backend_factory=None):
+    pad = FakePad()
+    backend = GamepadUDPBackend(
+        ambient_temp_c=20.0, ports=[OUTGAUGE_PORT], gamepad=pad, bind_host="127.0.0.1"
+    )
+    try:
+        backend.reset()
+        send_motionsim(x=10.0, vx=4.0, port=OUTGAUGE_PORT)
+        send_outgauge(rpm=2000.0, port=OUTGAUGE_PORT)
+        state = settle(backend)
+        assert state.rpm == pytest.approx(2000.0)
+    finally:
+        backend.close()
+
+
+def test_an_unrecognised_datagram_is_counted_not_crashed_on(backend):
+    send(b"x" * 51, OUTGAUGE_PORT)
+    settle(backend)
+    assert backend.unknown_packets == 1
