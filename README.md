@@ -51,12 +51,30 @@ BeamNG.tech licence, no third-party mod. It serves Streamable HTTP on
 py windows_mcp_probe.py --try-state
 ```
 
-This lists every tool the server exposes and writes `mcp_tools.json`. If it
-offers vehicle control and state, the virtual-gamepad path can be retired
-entirely — and if it exposes traffic and collision state, obstacle avoidance
-becomes possible for the first time.
+It offers 86 tools, and **the MCP path is now the recommended one** — no
+ViGEmBus, no UDP, no re-plug trick:
 
-Nothing in that probe drives the car.
+```
+py windows_drive.py "Delhi Courier" --mcp --rate 20 --route town-loop.json
+```
+
+`--rate 20` because every control step is several HTTP round trips.
+
+What MCP gives that the gamepad path cannot:
+
+| | |
+|---|---|
+| `inject_input` | analog throttle/brake/steering, no virtual gamepad |
+| `get_status` | position, speed and **damage** in one round trip |
+| `get_electrics` | real rpm, gear, fuel, pedals, coolant and oil temperature |
+| `get_vehicle_damage` | **collision detection** — the run stops when the car hits something |
+| `get_vehicles` | other vehicles, i.e. traffic |
+| `get_navgraph` | the road network the game's own AI drives on |
+| `get_ground_at_point` | terrain drivability, 0–1 |
+| `pause_physics` / `step_physics` | deterministic stepping |
+| `set_simulation_speed` | faster than real time — a 10-minute run need not take 10 minutes |
+
+Nothing in the probe drives the car.
 
 ### 3. Run the gamepad/telemetry probe
 

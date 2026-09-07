@@ -38,6 +38,7 @@ from control.path import Path  # noqa: E402
 from control.route import load_route  # noqa: E402
 from sim.backend import ControlInput  # noqa: E402
 from sim.gamepad_udp import GamepadUDPBackend  # noqa: E402
+from sim.mcp_backend import MCPBackend  # noqa: E402
 
 CACHE_DIR = FilePath(__file__).parent / "behaviour" / "cache"
 LOG_DIR = FilePath(__file__).parent / "runs"
@@ -60,7 +61,9 @@ def main() -> int:
     parser.add_argument("--list", action="store_true")
     parser.add_argument("--seconds", type=float, default=300.0)
     parser.add_argument("--speed-limit", type=float, default=20.0)
-    parser.add_argument("--rate", type=float, default=50.0, help="control loop Hz")
+    parser.add_argument("--rate", type=float, default=50.0,
+                        help="control loop Hz (use ~20 with --mcp: each step is "
+                             "several HTTP round trips)")
     parser.add_argument("--log-hz", type=float, default=1.0)
     parser.add_argument("--ports", type=int, nargs="+", default=[4444, 4445],
                         help="UDP ports to listen on; both streams may share one")
@@ -69,6 +72,10 @@ def main() -> int:
     parser.add_argument("--max-deviation", type=float, default=8.0,
                         help="abandon the run once this far off the route")
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--mcp", action="store_true",
+                        help="drive through BeamNG's built-in MCP server instead "
+                             "of the virtual gamepad (0.39+; no ViGEmBus, no UDP)")
+    parser.add_argument("--mcp-endpoint", default=None)
     args = parser.parse_args()
 
     specs = load_specs()
@@ -98,11 +105,22 @@ def main() -> int:
         print("  NOTE: driving a synthetic straight line, not a real road.")
         print("        Record the road first:  py windows_record.py <name>\n")
     dt = 1.0 / args.rate
-    backend = GamepadUDPBackend(
-        ambient_temp_c=spec.ambient_temp_c,
-        cold_start=spec.cold_start,
-        ports=args.ports,
-    )
+    if args.mcp:
+        backend = MCPBackend(
+            endpoint=args.mcp_endpoint,
+            ambient_temp_c=spec.ambient_temp_c,
+            cold_start=spec.cold_start,
+        )
+    else:
+        backend = GamepadUDPBackend(
+            ambient_temp_c=spec.ambient_temp_c,
+            cold_start=spec.cold_start,
+            ports=args.ports,
+        )
+    if args.mcp and args.rate > 25.0:
+        print(f"  NOTE: --rate {args.rate:.0f} Hz is optimistic over HTTP; "
+              f"20 Hz is a safer start with --mcp.\n")
+
     driver = Driver(
         spec, route, dt=dt, speed_limit_mps=args.speed_limit, seed=args.seed,
         max_deviation_m=args.max_deviation,
@@ -136,6 +154,10 @@ def main() -> int:
                 state = backend.read_state()
                 control = driver.step(state)
                 backend.apply_control(control)
+
+                if getattr(backend, "has_crashed", lambda: False)():
+                    print(f"\n  CRASHED at t={elapsed:.1f}s. Releasing controls.")
+                    break
 
                 if driver.is_lost(state):
                     print(f"\n  ABANDONED at t={elapsed:.1f}s: "
