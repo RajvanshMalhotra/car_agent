@@ -132,3 +132,52 @@ def test_the_route_can_be_replaced_after_a_recovery():
     backend.state.x_m, backend.state.y_m = 500.0, 500.0
     assert not driver.is_lost(backend.read_state())
     assert driver.deviation_m(backend.read_state()) == pytest.approx(0.0, abs=0.5)
+
+
+# -- driving a demonstration ----------------------------------------------
+
+
+def demo_driver(speed=10.0, factor=1.0):
+    from control.demonstration import Demonstration
+
+    demo = Demonstration.from_samples(
+        [(i * 2.0, 0.0, speed) for i in range(400)], name="lap"
+    )
+    backend = FakeBackend(dt=DT, wheelbase_m=6.5, max_accel_mps2=1.2)
+    backend.reset()
+    driver = PolicyDriver(
+        TRAINED, a_behaviour_spec(target_speed_factor=factor), demo.to_path(),
+        dt=DT, speed_limit_mps=99.0, stops=demo.stops(), demonstration=demo,
+    )
+    return driver, backend, demo
+
+
+def test_the_demonstrated_speed_becomes_the_target():
+    driver, backend, _ = demo_driver(speed=9.0)
+    driver.progress_m = 100.0
+    assert driver.target_speed_mps(backend.read_state()) == pytest.approx(9.0, rel=0.1)
+
+
+def test_an_aggressive_behaviour_drives_the_demonstration_faster():
+    calm, backend, _ = demo_driver(speed=9.0, factor=0.7)
+    brisk, _, _ = demo_driver(speed=9.0, factor=1.3)
+    calm.progress_m = brisk.progress_m = 100.0
+    state = backend.read_state()
+    assert brisk.target_speed_mps(state) > calm.target_speed_mps(state) + 3.0
+
+
+def test_the_speed_limit_no_longer_sets_the_pace():
+    # The human's own drive does. That is the point of watching them.
+    driver, backend, _ = demo_driver(speed=7.0)
+    driver.progress_m = 100.0
+    assert driver.target_speed_mps(backend.read_state()) < 20.0
+
+
+def test_it_actually_drives_the_demonstrated_route():
+    driver, backend, demo = demo_driver(speed=8.0)
+    for _ in range(int(120 / DT)):
+        backend.apply_control(driver.step(backend.read_state()))
+        if driver.is_finished(backend.read_state()):
+            break
+    assert driver.progress_m > 300.0
+    assert abs(backend.read_state().y_m) < 2.0

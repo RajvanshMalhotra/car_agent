@@ -27,10 +27,11 @@ from pathlib import Path as FilePath
 
 sys.path.insert(0, str(FilePath(__file__).parent))
 
+from control.demonstration import Demonstration, save_demonstration  # noqa: E402
 from control.route import DEFAULT_SPACING_M, save_route  # noqa: E402
 from sim.telemetry import MotionSimPacket, OutSimPacket, TelemetryError, identify  # noqa: E402
 
-ROUTE_DIR = FilePath(__file__).parent / "routes"
+ROUTE_DIR = FilePath(__file__).parent / "demonstrations"
 
 
 def bind(port: int) -> socket.socket:
@@ -47,6 +48,8 @@ def main() -> int:
     parser.add_argument("--ports", type=int, nargs="+", default=[4444, 4445])
     parser.add_argument("--seconds", type=float, default=1800.0)
     parser.add_argument("--spacing", type=float, default=DEFAULT_SPACING_M)
+    parser.add_argument("--rate", type=float, default=10.0,
+                        help="assumed telemetry rate, used to time stops")
     args = parser.parse_args()
 
     sockets = []
@@ -59,8 +62,9 @@ def main() -> int:
         print("no ports available", file=sys.stderr)
         return 1
 
-    print(f"Recording '{args.name}'. Drive the road now. Ctrl+C to finish.\n")
-    points: list[tuple[float, float]] = []
+    print(f"Recording '{args.name}'. Drive from A to B now -- normally, the way")
+    print("you want the route driven. Stops are kept. Ctrl+C to finish.\n")
+    samples: list[tuple[float, float, float]] = []
     deadline = time.time() + args.seconds
     last_report = 0.0
 
@@ -79,16 +83,20 @@ def main() -> int:
                     packet = parser_for.parse(data)
                 except TelemetryError:
                     continue
-                points.append((packet.x_m, packet.y_m))
+                # Speed as well as position: how fast the drive was done is
+                # what a behaviour later scales to make it brisk or gentle.
+                samples.append((packet.x_m, packet.y_m, packet.speed_mps))
 
                 now = time.time()
-                if now - last_report > 1.0 and points:
+                if now - last_report > 1.0 and samples:
                     last_report = now
+                    positions = [(x, y) for x, y, _ in samples]
                     travelled = sum(
-                        math.dist(a, b) for a, b in zip(points[::25], points[25::25])
+                        math.dist(a, b)
+                        for a, b in zip(positions[::25], positions[25::25])
                     )
-                    print(f"  {len(points)} samples, roughly {travelled:.0f} m driven",
-                          end="\r")
+                    print(f"  {len(samples)} samples, roughly {travelled:.0f} m, "
+                          f"{samples[-1][2]:5.1f} m/s", end="\r")
     except KeyboardInterrupt:
         pass
     finally:
@@ -96,26 +104,30 @@ def main() -> int:
             sock.close()
 
     print()
-    if len(points) < 2:
+    if len(samples) < 2:
         print("No pose telemetry received. Enable Motion Sim and check with "
               "windows_probe.py.", file=sys.stderr)
         return 1
 
     out = ROUTE_DIR / f"{args.name}.json"
     try:
-        thinned = save_route(out, points, name=args.name, min_spacing_m=args.spacing)
+        demo = Demonstration.from_samples(
+            samples, name=args.name, sample_hz=args.rate,
+            min_spacing_m=args.spacing,
+        )
     except ValueError as error:
-        print(f"Could not save the route: {error}", file=sys.stderr)
+        print(f"Could not save the drive: {error}", file=sys.stderr)
         return 1
+    save_demonstration(out, demo, metadata={"ports": args.ports})
 
-    from control.path import Path
-
-    route = Path(thinned)
     print(f"\nSaved {out}")
-    print(f"  {len(points)} samples -> {len(thinned)} points, {route.length_m:.0f} m")
-    print(f"\nDrive it with:")
-    print(f"  py windows_drive.py \"Delhi Courier\" --route {out.name} "
-          f"--ports {' '.join(str(p) for p in args.ports)}")
+    print(f"  {len(samples)} samples -> {len(demo.points)} points, "
+          f"{demo.length_m:.0f} m")
+    print(f"  you drove it at {demo.mean_speed_mps:.1f} m/s on average, "
+          f"with {len(demo.stops())} stop(s)")
+    print(f"\nNow have the agent drive it, in whatever style you ask for:")
+    print(f"  py windows_drive.py \"Delhi Courier\" --demo {args.name} --mcp")
+    print(f"  py windows_drive.py \"calm commuter\" --demo {args.name} --mcp")
     return 0
 
 

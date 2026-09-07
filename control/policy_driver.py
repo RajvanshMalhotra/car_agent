@@ -55,6 +55,7 @@ class PolicyDriver:
         seed: int = 0,
         stops: Sequence[Any] | None = None,
         max_deviation_m: float = DEFAULT_MAX_DEVIATION_M,
+        demonstration: Any | None = None,
     ) -> None:
         self.policy = policy
         self.spec = spec
@@ -62,6 +63,9 @@ class PolicyDriver:
         self.dt = dt
         self.speed_limit_mps = speed_limit_mps
         self.max_deviation_m = max_deviation_m
+        # When a human drive is supplied it sets the pace instead of a flat
+        # speed limit: where they slowed, the agent slows.
+        self.demonstration = demonstration
         self.rng = random.Random(seed)
 
         self.stops = list(stops or [])
@@ -112,7 +116,10 @@ class PolicyDriver:
     def target_speed_mps(self, state: VehicleState) -> float:
         if self.waiting_until_s is not None:
             return 0.0
-        target = self.speed_limit_mps * self.spec.target_speed_factor
+        if self.demonstration is not None:
+            target = self.demonstration.target_speed_at(self.progress_m, self.spec)
+        else:
+            target = self.speed_limit_mps * self.spec.target_speed_factor
         target = min(target, self._corner_speed_mps(self.progress_m))
         target *= self._wander_factor()
 
