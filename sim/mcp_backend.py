@@ -38,10 +38,52 @@ DEFAULT_CRASH_DAMAGE = 100.0
 #: Below this speed, displacement is too small to give a heading.
 HEADING_FROM_MOVEMENT_MPS = 1.0
 
+#: Gear as BeamNG reports it: a display string, not a number.
+GEAR_WORDS = {"N": 0, "P": 0, "R": -1}
+
+
 #: A reply that is a string rather than a mapping is the server saying "asked,
 #: come back in a moment".
 def _is_async_notice(result: Any) -> bool:
     return not isinstance(result, dict)
+
+
+def _number(value: Any, fallback: float) -> float:
+    """Coerce a telemetry field to a number, or keep the last good value.
+
+    The real server does not always send what its field names suggest -- gear
+    arrives as 'N' -- so nothing from it is trusted to be numeric. A junk field
+    must not end a run that is otherwise fine.
+    """
+    if value is None:
+        return fallback
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return fallback
+
+
+def _gear(electrics: dict[str, Any], fallback: int) -> int:
+    """BeamNG reports gear as 'N', 'R', 'P', 'D' or a number.
+
+    An automatic in drive reports 'D' and carries the real ratio in
+    `gearIndex`, so that is preferred when it is there.
+    """
+    raw = electrics.get("gear")
+    if isinstance(raw, (int, float)):
+        return int(raw)
+    if isinstance(raw, str):
+        word = raw.strip().upper()
+        if word in GEAR_WORDS:
+            return GEAR_WORDS[word]
+        try:
+            return int(float(word))
+        except ValueError:
+            pass
+    index = electrics.get("gearIndex")
+    if isinstance(index, (int, float)):
+        return int(index)
+    return fallback
 
 
 class MCPBackend(SimBackend):
@@ -141,22 +183,19 @@ class MCPBackend(SimBackend):
         if not _is_async_notice(electrics):
             self._electrics = electrics
         if self._electrics:
-            state.rpm = float(self._electrics.get("rpm", state.rpm))
-            state.gear = int(self._electrics.get("gear", state.gear) or 0)
-            state.fuel_fraction = float(
-                self._electrics.get("fuel", state.fuel_fraction)
+            state.rpm = _number(self._electrics.get("rpm"), state.rpm)
+            state.gear = _gear(self._electrics, state.gear)
+            state.fuel_fraction = _number(
+                self._electrics.get("fuel"), state.fuel_fraction
             )
-            state.throttle = float(self._electrics.get("throttle", state.throttle))
-            state.brake = float(self._electrics.get("brake", state.brake))
-            state.oil_temp_c = float(
-                self._electrics.get("oiltemp", state.oil_temp_c)
-            )
+            state.throttle = _number(self._electrics.get("throttle"), state.throttle)
+            state.brake = _number(self._electrics.get("brake"), state.brake)
+            state.oil_temp_c = _number(self._electrics.get("oiltemp"), state.oil_temp_c)
 
-        measured_coolant = (
-            float(self._electrics["watertemp"])
-            if "watertemp" in self._electrics
-            else None
-        )
+        measured_coolant = None
+        if "watertemp" in self._electrics:
+            coolant = _number(self._electrics["watertemp"], math.nan)
+            measured_coolant = None if math.isnan(coolant) else coolant
         engine = self.engine.step(
             speed_mps=state.speed_mps,
             throttle=state.throttle,

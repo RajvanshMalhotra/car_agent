@@ -256,3 +256,62 @@ def test_reset_rebases_the_origin(backend, stub):
     stub.pos = {"x": 500.0, "y": 900.0, "z": 1.0}
     state = backend.reset()
     assert (state.x_m, state.y_m) == pytest.approx((0.0, 0.0))
+
+
+# -- the real server's types are not the ones we assumed ------------------
+
+
+def test_a_neutral_gear_reported_as_a_letter_is_understood(backend, stub):
+    # BeamNG reports gear as a display string: 'N', 'R', 'P', 'D' or a number.
+    stub.electrics["gear"] = "N"
+    backend.read_state()
+    assert backend.read_state().gear == 0
+
+
+def test_reverse_is_understood(backend, stub):
+    stub.electrics["gear"] = "R"
+    backend.read_state()
+    assert backend.read_state().gear == -1
+
+
+def test_park_is_understood(backend, stub):
+    stub.electrics["gear"] = "P"
+    backend.read_state()
+    assert backend.read_state().gear == 0
+
+
+def test_a_numbered_gear_as_a_string_is_understood(backend, stub):
+    stub.electrics["gear"] = "4"
+    backend.read_state()
+    assert backend.read_state().gear == 4
+
+
+def test_a_drive_gear_prefers_the_numeric_index_when_present(backend, stub):
+    stub.electrics["gear"] = "D"
+    stub.electrics["gearIndex"] = 3
+    backend.read_state()
+    assert backend.read_state().gear == 3
+
+
+def test_an_unrecognisable_gear_does_not_bring_the_run_down(backend, stub):
+    stub.electrics["gear"] = "M1"
+    backend.read_state()
+    assert isinstance(backend.read_state().gear, int)
+
+
+def test_a_missing_numeric_field_does_not_bring_the_run_down(backend, stub):
+    stub.electrics["rpm"] = None
+    backend.read_state()
+    assert backend.read_state().rpm == 0.0
+
+
+def test_a_numeric_field_arriving_as_a_string_is_still_used(backend, stub):
+    stub.electrics["rpm"] = "2750.5"
+    backend.read_state()
+    assert backend.read_state().rpm == pytest.approx(2750.5)
+
+
+def test_junk_in_a_numeric_field_is_ignored_rather_than_fatal(backend, stub):
+    stub.electrics["watertemp"] = "n/a"
+    backend.read_state()
+    assert backend.read_state().coolant_temp_c > 0.0
