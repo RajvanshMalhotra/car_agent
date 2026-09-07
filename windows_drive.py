@@ -35,6 +35,7 @@ from behaviour.spec import BehaviourSpec  # noqa: E402
 from datalog.writer import RunLog  # noqa: E402
 from control.driver import Driver  # noqa: E402
 from control.path import Path  # noqa: E402
+from control.route import load_route  # noqa: E402
 from sim.backend import ControlInput  # noqa: E402
 from sim.gamepad_udp import GamepadUDPBackend  # noqa: E402
 
@@ -64,6 +65,9 @@ def main() -> int:
     parser.add_argument("--ports", type=int, nargs="+", default=[4444, 4445],
                         help="UDP ports to listen on; both streams may share one")
     parser.add_argument("--route-length", type=float, default=3000.0)
+    parser.add_argument("--route", help="a route recorded with windows_record.py")
+    parser.add_argument("--max-deviation", type=float, default=8.0,
+                        help="abandon the run once this far off the route")
     parser.add_argument("--seed", type=int, default=0)
     args = parser.parse_args()
 
@@ -82,14 +86,27 @@ def main() -> int:
         return 1
     spec = matches[0]
 
-    route = straight_route(args.route_length)
+    if args.route:
+        route_file = FilePath(args.route)
+        if not route_file.exists():
+            route_file = FilePath(__file__).parent / "routes" / args.route
+        route = load_route(route_file)
+        scenario = route_file.stem
+    else:
+        route = straight_route(args.route_length)
+        scenario = f"straight-{args.route_length:.0f}m"
+        print("  NOTE: driving a synthetic straight line, not a real road.")
+        print("        Record the road first:  py windows_record.py <name>\n")
     dt = 1.0 / args.rate
     backend = GamepadUDPBackend(
         ambient_temp_c=spec.ambient_temp_c,
         cold_start=spec.cold_start,
         ports=args.ports,
     )
-    driver = Driver(spec, route, dt=dt, speed_limit_mps=args.speed_limit, seed=args.seed)
+    driver = Driver(
+        spec, route, dt=dt, speed_limit_mps=args.speed_limit, seed=args.seed,
+        max_deviation_m=args.max_deviation,
+    )
 
     log_path = LOG_DIR / f"{time.strftime('%Y%m%d-%H%M%S')}_{spec.spec_hash}.csv"
     print(f"behaviour : {spec.name}  [{spec.spec_hash}]")
@@ -103,7 +120,7 @@ def main() -> int:
     log = RunLog(
         log_path,
         spec=spec,
-        scenario=f"straight-{args.route_length:.0f}m@{args.speed_limit:.0f}mps",
+        scenario=f"{scenario}@{args.speed_limit:.0f}mps",
         seed=args.seed,
         log_hz=args.log_hz,
     )
@@ -119,6 +136,12 @@ def main() -> int:
                 state = backend.read_state()
                 control = driver.step(state)
                 backend.apply_control(control)
+
+                if driver.is_lost(state):
+                    print(f"\n  ABANDONED at t={elapsed:.1f}s: "
+                          f"{driver.deviation_m(state):.1f} m off the route "
+                          f"(limit {args.max_deviation:.0f} m). Releasing controls.")
+                    break
 
                 if elapsed >= next_log:
                     next_log += log_interval

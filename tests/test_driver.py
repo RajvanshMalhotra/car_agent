@@ -255,3 +255,47 @@ def test_lane_keeping_is_stable_across_the_whole_reaction_lag_range(lag):
 
 def test_a_slow_reacting_driver_still_tracks_a_bend():
     assert max_tracking_error(spec(reaction_lag_s=2.0), arc_path()) < 1.5
+
+
+# --- losing the route ----------------------------------------------------
+
+
+def test_a_driver_on_its_route_is_not_lost():
+    backend = FakeBackend(dt=DT)
+    backend.reset()
+    path = straight_path()
+    driver = Driver(spec(), path, dt=DT, speed_limit_mps=20.0)
+    for _ in range(500):
+        backend.apply_control(driver.step(backend.read_state()))
+    assert not driver.is_lost(backend.read_state())
+
+
+def test_a_driver_far_from_its_route_is_lost():
+    # Nothing here perceives obstacles. The one honest safety response is to
+    # notice the car is no longer anywhere near the road and stop.
+    backend = FakeBackend(dt=DT)
+    backend.reset()
+    driver = Driver(spec(), straight_path(), dt=DT, speed_limit_mps=20.0)
+    driver.step(backend.read_state())
+    backend.state.y_m = 25.0
+    assert driver.is_lost(backend.read_state())
+
+
+def test_the_lost_threshold_is_configurable():
+    backend = FakeBackend(dt=DT)
+    backend.reset()
+    driver = Driver(
+        spec(), straight_path(), dt=DT, speed_limit_mps=20.0, max_deviation_m=3.0
+    )
+    driver.step(backend.read_state())
+    backend.state.y_m = 5.0
+    assert driver.is_lost(backend.read_state())
+
+
+def test_a_vehicle_just_off_the_line_is_not_lost():
+    backend = FakeBackend(dt=DT)
+    backend.reset()
+    driver = Driver(spec(), straight_path(), dt=DT, speed_limit_mps=20.0)
+    driver.step(backend.read_state())
+    backend.state.y_m = 1.5
+    assert not driver.is_lost(backend.read_state())

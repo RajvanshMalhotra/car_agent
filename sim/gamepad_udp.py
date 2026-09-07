@@ -43,6 +43,7 @@ class GamepadUDPBackend(SimBackend):
         ports: "tuple[int, ...] | list[int]" = DEFAULT_PORTS,
         gamepad=None,
         bind_host: str = "0.0.0.0",
+        replug: bool = True,
     ) -> None:
         self.ambient_temp_c = ambient_temp_c
         self.engine = EngineModel(ambient_temp_c, cold_start=cold_start)
@@ -59,11 +60,21 @@ class GamepadUDPBackend(SimBackend):
 
         self.unknown_packets = 0
         self.packet_counts = {"outgauge": 0, "motionsim": 0, "outsim": 0}
-        self.gamepad = gamepad if gamepad is not None else self._open_gamepad()
+        self.gamepad = (
+            gamepad if gamepad is not None else self._open_gamepad(replug=replug)
+        )
         self.sockets = [self._bind(bind_host, port) for port in dict.fromkeys(ports)]
 
     @staticmethod
-    def _open_gamepad():
+    def _open_gamepad(replug: bool = True):
+        """Create the virtual pad, optionally re-plugging it first.
+
+        BeamNG enumerates input devices when one is connected or removed, not
+        continuously -- which is why unplugging a real controller makes the
+        virtual pad start working. Creating a pad, dropping it and creating
+        another produces exactly that connect/disconnect pair, so the game
+        picks the virtual pad up without anyone touching the hardware.
+        """
         try:
             import vgamepad
         except ImportError as error:  # pragma: no cover - Windows only
@@ -72,6 +83,13 @@ class GamepadUDPBackend(SimBackend):
                 "It also needs the ViGEmBus driver: "
                 "https://github.com/nefarius/ViGEmBus/releases"
             ) from error
+
+        if replug:
+            throwaway = vgamepad.VX360Gamepad()
+            throwaway.update()
+            time.sleep(0.4)
+            del throwaway
+            time.sleep(0.6)
         return vgamepad.VX360Gamepad()
 
     @staticmethod

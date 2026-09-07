@@ -32,6 +32,11 @@ NEUROMUSCULAR_LAG_S = 0.15
 #: Speed-target deviation at `erraticness` 1.0, as a fraction, one sigma.
 WANDER_SCALE = 0.15
 
+#: How far off the route the car may stray before the run is abandoned. Nothing
+#: in this project perceives obstacles, so noticing the car is no longer near
+#: the road -- and stopping -- is the only honest safety response available.
+DEFAULT_MAX_DEVIATION_M = 8.0
+
 #: Aim to stop this far before the route end. Without the margin the stopping
 #: profile is exactly critical, and any loop lag turns into an overshoot.
 STOP_MARGIN_M = 2.0
@@ -54,6 +59,7 @@ class Driver:
         max_steer_rad: float = 0.5,
         max_accel_mps2: float = 3.0,
         max_decel_mps2: float = 8.0,
+        max_deviation_m: float = DEFAULT_MAX_DEVIATION_M,
     ) -> None:
         self.spec = spec
         self.path = path
@@ -61,6 +67,7 @@ class Driver:
         self.speed_limit_mps = speed_limit_mps
         self.max_accel_mps2 = max_accel_mps2
         self.max_decel_mps2 = max_decel_mps2
+        self.max_deviation_m = max_deviation_m
 
         self.steering_controller = PurePursuit(wheelbase_m, max_steer_rad)
         self.speed_controller = PID(kp=0.8, ki=0.15, kd=0.02, integral_limit=4.0)
@@ -173,6 +180,22 @@ class Driver:
         return ControlInput(
             throttle=throttle, brake=brake, steering=steering_command
         )
+
+    def deviation_m(self, state: VehicleState) -> float:
+        """How far the vehicle is from the route it is meant to be on."""
+        arc_length = self.path.closest_arc_length(
+            (state.x_m, state.y_m), near_arc_length=self.progress_m
+        )
+        near_x, near_y = self.path.point_at(arc_length)
+        return math.hypot(near_x - state.x_m, near_y - state.y_m)
+
+    def is_lost(self, state: VehicleState) -> bool:
+        """True once the vehicle is too far off the route to be recovered.
+
+        This is not obstacle avoidance -- there is no perception here. It only
+        catches the case where the car has clearly left the road.
+        """
+        return self.deviation_m(state) > self.max_deviation_m
 
     def is_finished(self, state: VehicleState) -> bool:
         arc_length = self.path.closest_arc_length(

@@ -49,6 +49,15 @@ def check_gamepad() -> bool:
         print("  vgamepad is NOT installed.        py -m pip install vgamepad")
         return False
     try:
+        # BeamNG enumerates input devices on a connect/disconnect event, not
+        # continuously. Creating a pad and dropping it produces that event, so
+        # the real pad below is noticed without unplugging any hardware.
+        print("  Re-plugging the virtual pad so BeamNG re-enumerates...")
+        throwaway = vgamepad.VX360Gamepad()
+        throwaway.update()
+        time.sleep(0.4)
+        del throwaway
+        time.sleep(0.6)
         pad = vgamepad.VX360Gamepad()
     except Exception as error:  # ViGEmBus driver missing or not running
         print(f"  vgamepad imported but the pad would not open: {error}")
@@ -64,8 +73,10 @@ def check_gamepad() -> bool:
         time.sleep(0.02)
     pad.left_joystick_float(x_value_float=0.0, y_value_float=0.0)
     pad.update()
-    print("  Sweep done. Did the front wheels move? If not, BeamNG is not")
-    print("  binding the virtual pad - check Options > Controls.")
+    print("  Sweep done. Did the front wheels move?")
+    print("  If not: Options > Controls > 'Reset to default bindings: XBox")
+    print("  Controller 1', put the car IN GEAR, and unplug any physical")
+    print("  controller - a real pad with a drifting trigger fights this one.")
     return True
 
 
