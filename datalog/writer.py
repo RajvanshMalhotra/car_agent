@@ -46,6 +46,7 @@ COLUMNS = [
     "engine_on",
     "crank_count",
     "idling",
+    "damage",
     # actual pedals, then what the controller asked for
     "throttle",
     "brake",
@@ -75,6 +76,7 @@ class RunLog:
         self.rows = 0
         self.idle_rows = 0
         self.bay_temps: list[float] = []
+        self.max_damage = 0.0
 
         self.csv_path.parent.mkdir(parents=True, exist_ok=True)
         self._handle = self.csv_path.open("w", newline="")
@@ -112,6 +114,7 @@ class RunLog:
                 int(state.engine_on),
                 state.crank_count,
                 int(idling),
+                round(state.damage, 2),
                 round(state.throttle, 4),
                 round(state.brake, 4),
                 round(control.throttle, 4),
@@ -124,6 +127,7 @@ class RunLog:
         self.rows += 1
         self.idle_rows += int(idling)
         self.bay_temps.append(state.underbonnet_temp_c)
+        self.max_damage = max(self.max_damage, state.damage)
 
     def summary(self) -> dict[str, Any]:
         return {
@@ -139,6 +143,7 @@ class RunLog:
                 self.bay_temps, dt_s=1.0 / self.log_hz if self.log_hz else 1.0
             ),
             "equivalent_hours_reference_c": REFERENCE_TEMP_C,
+            "max_damage": self.max_damage,
         }
 
     def close(self) -> None:

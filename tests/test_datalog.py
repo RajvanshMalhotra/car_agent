@@ -258,3 +258,17 @@ def test_the_sidecar_is_written_even_if_the_run_raises(tmp_path):
             log.record(a_state(), ControlInput(0, 0, 0))
             raise RuntimeError("simulated crash")
     assert sidecar(tmp_path)["summary"]["rows"] == 1
+
+
+def test_damage_is_recorded(tmp_path):
+    # Without it a crashed run cannot be told from a run that clipped a kerb.
+    with open_log(tmp_path) as log:
+        log.record(a_state(damage=420.0), ControlInput(0, 0, 0))
+    assert float(rows(tmp_path)[0]["damage"]) == 420.0
+
+
+def test_the_summary_reports_the_damage_taken(tmp_path):
+    with open_log(tmp_path) as log:
+        log.record(a_state(damage=0.0), ControlInput(0, 0, 0))
+        log.record(a_state(damage=750.0), ControlInput(0, 0, 0))
+    assert sidecar(tmp_path)["summary"]["max_damage"] == 750.0

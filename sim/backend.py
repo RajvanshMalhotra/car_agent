@@ -58,6 +58,10 @@ class VehicleState:
     engine_on: bool = False
     crank_count: int = 0
 
+    #: Cumulative damage as the simulator reports it. Unitless and monotonic;
+    #: a kerb strike registers in the tens, a real impact in the hundreds.
+    damage: float = 0.0
+
     #: What the vehicle actually did, as reported back by the simulator -- not
     #: what the controller asked for. Engine load follows the actual pedals.
     throttle: float = 0.0

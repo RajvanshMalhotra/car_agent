@@ -77,6 +77,8 @@ def main() -> int:
     parser.add_argument("--route-length", type=float, default=3000.0)
     parser.add_argument("--route", help="a route recorded with windows_record.py")
     parser.add_argument("--manoeuvres", help="an LLM-designed route: part of its name")
+    parser.add_argument("--crash-damage", type=float, default=100.0,
+                        help="damage above which a run is treated as a crash")
     parser.add_argument("--max-deviation", type=float, default=8.0,
                         help="abandon the run once this far off the route")
     parser.add_argument("--seed", type=int, default=0)
@@ -144,6 +146,7 @@ def main() -> int:
             endpoint=args.mcp_endpoint,
             ambient_temp_c=spec.ambient_temp_c,
             cold_start=spec.cold_start,
+            crash_damage=args.crash_damage,
         )
     else:
         backend = GamepadUDPBackend(
@@ -257,7 +260,9 @@ def main() -> int:
                 backend.apply_control(control)
 
                 if getattr(backend, "has_crashed", lambda: False)():
-                    print(f"\n  CRASHED at t={elapsed:.1f}s. Releasing controls.")
+                    taken = getattr(backend, "damage_since_start", 0.0)
+                    print(f"\n  CRASHED at t={elapsed:.1f}s: damage {taken:.0f} "
+                          f"(threshold {args.crash_damage:.0f}). Releasing controls.")
                     break
 
                 if driver.is_lost(state):

@@ -135,6 +135,7 @@ class MCPBackend(SimBackend):
             state.speed_mps = float(vehicle["speed"])
         if "damage" in vehicle:
             self._damage = float(vehicle["damage"])
+            state.damage = self._damage
 
         electrics = self.client.call("get_electrics")
         if not _is_async_notice(electrics):
@@ -201,6 +202,10 @@ class MCPBackend(SimBackend):
                 close()
 
     # -- perception, finally ----------------------------------------------
+
+    @property
+    def damage_since_start(self) -> float:
+        return self._damage - self._baseline_damage
 
     def has_crashed(self) -> bool:
         """True once the vehicle has taken damage since the run began.
