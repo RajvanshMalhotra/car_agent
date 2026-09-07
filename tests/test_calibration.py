@@ -196,3 +196,46 @@ def test_alignment_also_paces_itself_by_the_clock():
     x, _, heading = measure_heading(backend, dt=0.02)
     assert x >= 4.0
     assert heading == pytest.approx(0.0, abs=0.05)
+
+
+class JitteryBackend(FakeBackend):
+    """A backend sampled at uneven intervals, like one over HTTP.
+
+    The clock stays truthful -- it advances exactly as much as the physics
+    does -- but round trips do not take the same time twice, so consecutive
+    samples are unevenly spaced. A rate estimator that takes the largest
+    difference over a fixed number of samples will latch onto whichever pair
+    happened to be closest together and report an acceleration several times
+    the real one, which is what a truck measuring 5.34 m/s^2 turned out to be.
+    """
+
+    def __init__(self, seed=0, **kwargs):
+        super().__init__(**kwargs)
+        self._jitter = __import__("random").Random(seed)
+
+    def apply_control(self, control):
+        for _ in range(self._jitter.choice([1, 1, 2, 5])):
+            super().apply_control(control)
+
+
+def test_acceleration_is_not_inflated_by_uneven_sampling():
+    backend = JitteryBackend(dt=0.02, max_accel_mps2=1.2, max_decel_mps2=4.0,
+                             wheelbase_m=6.5)
+    backend.reset()
+    limits = calibrate(backend, dt=0.02, vehicle="jittery")
+    limits.validate()
+    assert limits.max_accel_mps2 == pytest.approx(1.2, rel=0.35)
+
+
+def test_braking_is_not_inflated_by_uneven_sampling():
+    backend = JitteryBackend(dt=0.02, max_accel_mps2=1.2, max_decel_mps2=4.0,
+                             wheelbase_m=6.5)
+    backend.reset()
+    assert calibrate(backend, dt=0.02).max_decel_mps2 == pytest.approx(4.0, rel=0.4)
+
+
+def test_the_steering_response_survives_uneven_sampling():
+    backend = JitteryBackend(dt=0.02, max_accel_mps2=1.2, max_decel_mps2=4.0,
+                             wheelbase_m=6.5)
+    backend.reset()
+    assert calibrate(backend, dt=0.02).wheelbase_m == pytest.approx(6.5, rel=0.25)

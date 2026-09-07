@@ -71,7 +71,7 @@ class VehicleLimits:
 
 
 #: Guard against a backend whose clock never advances.
-MAX_STEPS_PER_PHASE = 100_000
+MAX_STEPS_PER_PHASE = 20_000
 
 
 def _drive(backend: SimBackend, control: ControlInput, dt: float, seconds: float):
@@ -92,14 +92,38 @@ def _drive(backend: SimBackend, control: ControlInput, dt: float, seconds: float
     return samples
 
 
-def _peak_rate(samples, window: int = 5) -> float:
-    """Largest sustained rate of speed change across the samples."""
-    best = 0.0
-    for a, b in zip(samples, samples[window:]):
-        span = b[0] - a[0]
+#: A rate is only measured across windows spanning at least this much time.
+#: Over HTTP the gap between samples varies a lot, and a short window divides a
+#: normal speed change by an abnormally small time -- which is how a truck
+#: measured 5.34 m/s^2 when it actually managed 1.2.
+MIN_RATE_WINDOW_S = 0.5
+
+#: Take a high quantile rather than the maximum, so one freak window cannot set
+#: the answer on its own.
+RATE_QUANTILE = 0.9
+
+
+def _peak_rate(samples) -> float:
+    """Sustained rate of speed change, robust to an uneven clock.
+
+    One pass: the end of each window only ever moves forward, so this is linear
+    in the number of samples rather than quadratic.
+    """
+    rates = []
+    end = 0
+    for start in range(len(samples)):
+        end = max(end, start + 1)
+        while end < len(samples) and samples[end][0] - samples[start][0] < MIN_RATE_WINDOW_S:
+            end += 1
+        if end >= len(samples):
+            break
+        span = samples[end][0] - samples[start][0]
         if span > 0:
-            best = max(best, abs(b[1] - a[1]) / span)
-    return best
+            rates.append(abs(samples[end][1] - samples[start][1]) / span)
+    if not rates:
+        return 0.0
+    rates.sort()
+    return rates[min(len(rates) - 1, int(len(rates) * RATE_QUANTILE))]
 
 
 def calibrate(backend: SimBackend, dt: float, vehicle: str = "unknown") -> VehicleLimits:
