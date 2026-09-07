@@ -17,7 +17,7 @@ with one crank, so the sulfation pathway has no data yet. Nothing has ever run
 against the real game.
 
 ```bash
-python3 -m pytest -q          # 208 tests, ~19 s, no network, no Windows machine
+python3 -m pytest -q          # 227 tests, ~20 s, no network, no Windows machine
 ./agent.py list               # cached behaviours
 ./agent.py drive <name|hash>  # run one through the fake backend
 export DEEPSEEK_API_KEY=...   # only needed for `./agent.py generate`

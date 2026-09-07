@@ -86,7 +86,7 @@ Output lands in `runs/`:
 Everything except `windows_*.py` runs anywhere, against a kinematic fake backend:
 
 ```
-python3 -m pytest -q        # 208 tests, ~19 s, no network, no game
+python3 -m pytest -q        # 227 tests, ~20 s, no network, no game
 ./agent.py list
 ./agent.py drive "Delhi Courier"
 ```
