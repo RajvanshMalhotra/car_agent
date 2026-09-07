@@ -213,3 +213,49 @@ def test_restarts_do_better_than_the_worst_single_run():
     single, _ = learn_to_drive(iterations=15, population=24, seconds=25.0,
                                episodes_per_candidate=4, seed=11)
     assert off_road(picked) <= off_road(single)
+
+
+@pytest.mark.slow
+def test_the_policy_holds_every_target_speed_once_it_is_up_to_speed(trained):
+    """Speed tracking, measured where speed tracking can be measured.
+
+    A 30 s episode with a stop in the middle spends most of its time
+    accelerating from rest -- twice -- so mean speed over one is dominated by
+    the ramps and reads far below target even when tracking is fine. Judged on a
+    straight with time to settle, the policy holds its target at both ends of
+    the range.
+    """
+    import statistics
+
+    from control.learning import random_vehicle
+    from control.path import Path
+    from control.policy import observe
+    from sim.fake import FakeBackend
+
+    course = Path([(i * 3.0, 0.0) for i in range(1500)])
+    for target in (4.0, 12.0, 22.0):
+        settled = []
+        for seed in range(600, 604):
+            backend = FakeBackend(dt=0.05, seed=seed, **random_vehicle(seed))
+            backend.reset()
+            progress, previous, speeds = 0.0, 0.0, []
+            for step in range(int(120 / 0.05)):
+                state = backend.read_state()
+                control = trained.act(
+                    observe(course, state.x_m, state.y_m, state.heading_rad,
+                            state.speed_mps, target, previous, progress_m=progress)
+                )
+                backend.apply_control(control)
+                previous = control.steering
+                state = backend.read_state()
+                progress = course.closest_arc_length(
+                    (state.x_m, state.y_m), near_arc_length=progress
+                )
+                if step > int(90 / 0.05):
+                    speeds.append(state.speed_mps)
+                if progress > course.length_m - 50:
+                    break
+            if speeds:
+                settled.append(statistics.mean(speeds))
+        held = statistics.mean(settled)
+        assert abs(held - target) / target < 0.15, (target, held)

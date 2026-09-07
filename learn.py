@@ -56,16 +56,17 @@ def report(policy: DrivingPolicy) -> None:
     print(f"    tracking error  {summary['cross_track_m']:.2f} m")
     print(f"    speed error     {summary['speed_error_mps']:.2f} m/s")
 
-    print("\n  by target speed:")
+    print("\n  by target speed (the mean includes accelerating from rest, so it"
+          "\n  reads below target even when steady-state tracking is exact):")
     for target in (4.0, 8.0, 12.0, 18.0, 22.0):
         runs = [
             drive_episode(policy, seed=s, seconds=30.0, target_speed_mps=target)
             for s in range(91_000, 91_010)
         ]
         print(
-            f"    {target:5.1f} m/s   off-road {sum(r.left_the_road for r in runs)}/10"
+            f"    asked {target:5.1f} m/s   held {statistics.mean(r.mean_driving_speed_mps for r in runs):5.2f} m/s"
+            f"   off-road {sum(r.left_the_road for r in runs)}/10"
             f"   tracking {statistics.mean(r.mean_cross_track_m for r in runs):5.2f} m"
-            f"   speed error {statistics.mean(r.mean_speed_error_mps for r in runs):5.2f} m/s"
         )
 
 

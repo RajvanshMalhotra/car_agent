@@ -78,7 +78,13 @@ DT = 0.05
 class Episode:
     score: float
     mean_cross_track_m: float
+    #: Physical speed error while driving, in m/s. Excludes the stop window --
+    #: mixing the two produced a "speed error" that was really a reward term,
+    #: and made a policy that drives fine look as though it capped out at
+    #: walking pace.
     mean_speed_error_mps: float
+    #: Mean speed actually held while asked to drive.
+    mean_driving_speed_mps: float
     distance_m: float
     left_the_road: bool
     target_speed_mps: float
@@ -133,7 +139,10 @@ def drive_episode(
     backend.state.heading_rad = rng.uniform(-0.3, 0.3)
 
     cross_track_sum = 0.0
-    speed_error_sum = 0.0
+    penalty_sum = 0.0
+    driving_error_sum = 0.0
+    driving_speed_sum = 0.0
+    driving_steps = 0
     steps = 0
     progress = 0.0
     previous_steering = 0.0
@@ -172,8 +181,12 @@ def drive_episode(
         offset = math.hypot(near_x - state.x_m, near_y - state.y_m)
 
         cross_track_sum += offset
-        weight = STOP_ERROR_WEIGHT if stopping else 1.0
-        speed_error_sum += weight * abs(state.speed_mps - wanted)
+        error = abs(state.speed_mps - wanted)
+        penalty_sum += (STOP_ERROR_WEIGHT if stopping else 1.0) * error
+        if not stopping:
+            driving_error_sum += error
+            driving_speed_sum += state.speed_mps
+            driving_steps += 1
         steps += 1
 
         if offset > OFF_ROAD_M:
@@ -183,7 +196,9 @@ def drive_episode(
             break
 
     mean_cross_track = cross_track_sum / max(1, steps)
-    mean_speed_error = speed_error_sum / max(1, steps)
+    mean_penalty = penalty_sum / max(1, steps)
+    mean_speed_error = driving_error_sum / max(1, driving_steps)
+    mean_driving_speed = driving_speed_sum / max(1, driving_steps)
     # Leaving the road needs no separate penalty: it ends the episode, so the
     # progress term collapses on its own.
     driving_seconds = seconds * (1.0 - (STOP_WINDOW[1] - STOP_WINDOW[0]))
@@ -201,12 +216,13 @@ def drive_episode(
     score = (
         PROGRESS_WEIGHT * progress_fraction
         - mean_cross_track
-        - SPEED_ERROR_WEIGHT * mean_speed_error
+        - SPEED_ERROR_WEIGHT * mean_penalty
     )
     return Episode(
         score=score,
         mean_cross_track_m=mean_cross_track,
         mean_speed_error_mps=mean_speed_error,
+        mean_driving_speed_mps=mean_driving_speed,
         distance_m=progress,
         left_the_road=left_the_road,
         target_speed_mps=target,
