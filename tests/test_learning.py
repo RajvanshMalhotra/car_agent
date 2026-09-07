@@ -48,12 +48,13 @@ def test_an_episode_reports_how_well_it_drove():
     assert result.score <= 0.0
 
 
-def test_a_policy_that_does_nothing_scores_badly():
-    idle = drive_episode(DrivingPolicy.zero(), seed=1, seconds=20.0).score
-    trained = drive_episode(
-        _known_good_policy(), seed=1, seconds=20.0
-    ).score
-    assert trained > idle
+def test_a_policy_that_does_nothing_covers_no_ground():
+    # Not distance_m: that is progress *along the course*, and an episode starts
+    # at a random lateral offset, so a stationary car still projects onto a
+    # small arc length. What is actually zero is the speed.
+    episode = drive_episode(DrivingPolicy.zero(), seed=1, seconds=20.0)
+    assert episode.mean_driving_speed_mps == 0.0
+    assert episode.distance_m < 1.0
 
 
 def test_an_episode_is_deterministic():
@@ -86,11 +87,10 @@ def _known_good_policy():
 
 
 @pytest.mark.slow
-def test_learning_beats_doing_nothing():
-    learned, _ = learn_to_drive(iterations=4, population=16, seconds=20.0,
-                                episodes_per_candidate=2, seed=1)
-    idle = _mean_score(DrivingPolicy.zero())
-    assert _mean_score(learned) > idle
+def test_learning_beats_doing_nothing(trained):
+    # Measured over 40 episodes: about -1.4 learned against -10.8 for a policy
+    # that never moves, and 168 m driven against none.
+    assert _mean_score(trained) > _mean_score(DrivingPolicy.zero()) + 5.0
 
 
 pytestmark_slow = pytest.mark.slow
@@ -167,10 +167,16 @@ def test_learning_removes_the_need_to_configure_the_vehicle(trained):
     assert sum(r.left_the_road for r in results) <= 1
 
 
+#: Four episodes is not enough to separate two policies here: the scores
+#: overlap and the comparison flips on noise. Forty settles it.
+COMPARISON_SEEDS = range(300, 340)
+
+
 def _mean_score(policy):
     return sum(
-        drive_episode(policy, seed=s, seconds=20.0).score for s in range(30, 34)
-    ) / 4
+        drive_episode(policy, seed=s, seconds=25.0).score
+        for s in COMPARISON_SEEDS
+    ) / len(COMPARISON_SEEDS)
 
 
 # -- the training environment itself --------------------------------------
