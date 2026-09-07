@@ -35,6 +35,7 @@ from behaviour.spec import BehaviourSpec  # noqa: E402
 from datalog.writer import RunLog  # noqa: E402
 from control.driver import Driver  # noqa: E402
 from control.path import Path  # noqa: E402
+from control.alignment import measure_heading, straight_route_from  # noqa: E402
 from control.route import load_route  # noqa: E402
 from sim.backend import ControlInput  # noqa: E402
 from sim.gamepad_udp import GamepadUDPBackend  # noqa: E402
@@ -99,12 +100,13 @@ def main() -> int:
             route_file = FilePath(__file__).parent / "routes" / args.route
         route = load_route(route_file)
         scenario = route_file.stem
+        route = None  # built after the backend exists, see below
+        recorded = route_file
     else:
-        route = straight_route(args.route_length)
-        scenario = f"straight-{args.route_length:.0f}m"
-        print("  NOTE: driving a synthetic straight line, not a real road.")
-        print("        Record the road first:  py windows_record.py <name>\n")
+        recorded = None
+        scenario = f"aligned-straight-{args.route_length:.0f}m"
     dt = 1.0 / args.rate
+
     if args.mcp:
         backend = MCPBackend(
             endpoint=args.mcp_endpoint,
@@ -117,6 +119,26 @@ def main() -> int:
             cold_start=spec.cold_start,
             ports=args.ports,
         )
+    # The route has to start where the car is and run the way it faces. Rather
+    # than trusting a reported orientation whose conventions are undocumented,
+    # roll the car forward briefly and measure which way it actually went.
+    backend.reset()
+    if recorded is not None:
+        route = load_route(recorded)
+        print(f"  route: {recorded.name}, {route.length_m:.0f} m")
+    else:
+        print("  aligning: rolling forward to find which way the car points...")
+        try:
+            x, y, heading = measure_heading(backend, dt=dt)
+        except RuntimeError as error:
+            print(f"\n  {error}", file=sys.stderr)
+            backend.apply_control(ControlInput(0.0, 0.0, 0.0))
+            backend.close()
+            return 1
+        route = straight_route_from((x, y), heading, args.route_length)
+        print(f"  aligned: heading {math.degrees(heading):.1f} deg, "
+              f"{args.route_length:.0f} m straight ahead")
+
     if args.mcp and args.rate > 25.0:
         print(f"  NOTE: --rate {args.rate:.0f} Hz is optimistic over HTTP; "
               f"20 Hz is a safer start with --mcp.\n")

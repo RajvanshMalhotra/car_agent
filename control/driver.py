@@ -37,6 +37,11 @@ WANDER_SCALE = 0.15
 #: the road -- and stopping -- is the only honest safety response available.
 DEFAULT_MAX_DEVIATION_M = 8.0
 
+#: Pure pursuit needs road to turn onto the line. Judging deviation before the
+#: car has travelled this far aborts runs that would have converged fine --
+#: which is exactly what happens when a run starts with a heading error.
+DEFAULT_LOST_GRACE_M = 40.0
+
 #: Aim to stop this far before the route end. Without the margin the stopping
 #: profile is exactly critical, and any loop lag turns into an overshoot.
 STOP_MARGIN_M = 2.0
@@ -60,6 +65,7 @@ class Driver:
         max_accel_mps2: float = 3.0,
         max_decel_mps2: float = 8.0,
         max_deviation_m: float = DEFAULT_MAX_DEVIATION_M,
+        lost_grace_m: float = DEFAULT_LOST_GRACE_M,
     ) -> None:
         self.spec = spec
         self.path = path
@@ -68,6 +74,9 @@ class Driver:
         self.max_accel_mps2 = max_accel_mps2
         self.max_decel_mps2 = max_decel_mps2
         self.max_deviation_m = max_deviation_m
+        self.lost_grace_m = lost_grace_m
+        self.travelled_m = 0.0
+        self._previous_position: tuple[float, float] | None = None
 
         self.steering_controller = PurePursuit(wheelbase_m, max_steer_rad)
         self.speed_controller = PID(kp=0.8, ki=0.15, kd=0.02, integral_limit=4.0)
@@ -139,6 +148,11 @@ class Driver:
     # -- control ----------------------------------------------------------
 
     def step(self, state: VehicleState) -> ControlInput:
+        position = (state.x_m, state.y_m)
+        if self._previous_position is not None:
+            self.travelled_m += math.dist(position, self._previous_position)
+        self._previous_position = position
+
         decision, steering = self._perceive(state)
         # Progress is tracked so path lookups stay local rather than scanning
         # the whole route on every timestep.
@@ -195,6 +209,8 @@ class Driver:
         This is not obstacle avoidance -- there is no perception here. It only
         catches the case where the car has clearly left the road.
         """
+        if self.travelled_m < self.lost_grace_m:
+            return False
         return self.deviation_m(state) > self.max_deviation_m
 
     def is_finished(self, state: VehicleState) -> bool:

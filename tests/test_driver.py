@@ -270,13 +270,20 @@ def test_a_driver_on_its_route_is_not_lost():
     assert not driver.is_lost(backend.read_state())
 
 
+def drive_past_grace(backend, driver):
+    """Get the car beyond the convergence grace distance and settled."""
+    while driver.travelled_m < driver.lost_grace_m + 20.0:
+        backend.apply_control(driver.step(backend.read_state()))
+    return backend.read_state()
+
+
 def test_a_driver_far_from_its_route_is_lost():
     # Nothing here perceives obstacles. The one honest safety response is to
     # notice the car is no longer anywhere near the road and stop.
     backend = FakeBackend(dt=DT)
     backend.reset()
     driver = Driver(spec(), straight_path(), dt=DT, speed_limit_mps=20.0)
-    driver.step(backend.read_state())
+    drive_past_grace(backend, driver)
     backend.state.y_m = 25.0
     assert driver.is_lost(backend.read_state())
 
@@ -287,7 +294,7 @@ def test_the_lost_threshold_is_configurable():
     driver = Driver(
         spec(), straight_path(), dt=DT, speed_limit_mps=20.0, max_deviation_m=3.0
     )
-    driver.step(backend.read_state())
+    drive_past_grace(backend, driver)
     backend.state.y_m = 5.0
     assert driver.is_lost(backend.read_state())
 
@@ -296,6 +303,51 @@ def test_a_vehicle_just_off_the_line_is_not_lost():
     backend = FakeBackend(dt=DT)
     backend.reset()
     driver = Driver(spec(), straight_path(), dt=DT, speed_limit_mps=20.0)
-    driver.step(backend.read_state())
+    drive_past_grace(backend, driver)
     backend.state.y_m = 1.5
     assert not driver.is_lost(backend.read_state())
+
+
+def test_a_driver_is_not_declared_lost_before_it_has_had_room_to_converge():
+    # Pure pursuit needs distance to turn onto the line. Judging it in the
+    # first few metres aborts runs that would have recovered fine.
+    backend = FakeBackend(dt=DT)
+    backend.reset()
+    backend.state.y_m = 20.0
+    driver = Driver(spec(), straight_path(), dt=DT, speed_limit_mps=20.0)
+    driver.step(backend.read_state())
+    assert not driver.is_lost(backend.read_state())
+
+
+def test_a_driver_holds_its_line_against_a_steady_sideways_drag():
+    # 2.5 m/s of sideways drag settles at about 1.5 m of offset -- the
+    # controller counteracts it rather than being pushed off the road.
+    backend = FakeBackend(dt=DT)
+    backend.reset()
+    driver = Driver(spec(), straight_path(), dt=DT, speed_limit_mps=20.0)
+    for _ in range(3000):
+        backend.apply_control(driver.step(backend.read_state()))
+        backend.state.y_m += 0.05
+    assert driver.deviation_m(backend.read_state()) < 3.0
+    assert not driver.is_lost(backend.read_state())
+
+
+def test_a_car_that_leaves_the_road_after_settling_is_lost():
+    backend = FakeBackend(dt=DT)
+    backend.reset()
+    driver = Driver(spec(), straight_path(), dt=DT, speed_limit_mps=20.0)
+    drive_past_grace(backend, driver)
+    for _ in range(400):
+        backend.apply_control(driver.step(backend.read_state()))
+        backend.state.y_m += 0.5  # far faster than it can steer back
+    assert driver.is_lost(backend.read_state())
+
+
+def test_a_driver_that_converges_within_the_grace_distance_is_never_lost():
+    backend = FakeBackend(dt=DT)
+    backend.reset()
+    backend.state.y_m = 6.0
+    driver = Driver(spec(), straight_path(), dt=DT, speed_limit_mps=20.0)
+    for _ in range(6000):
+        backend.apply_control(driver.step(backend.read_state()))
+        assert not driver.is_lost(backend.read_state())

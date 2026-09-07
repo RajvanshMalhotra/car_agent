@@ -102,10 +102,19 @@ py windows_record.py town-loop                       # drive the road yourself f
 py windows_drive.py "Delhi Courier" --route town-loop.json --ports 4444
 ```
 
-**Record the road before driving it.** The default route is a synthetic straight
-line with no relationship to the road, so the car will leave the tarmac and the
-run will abandon itself. `windows_record.py` captures the line you drive by hand
-and every behaviour then follows that.
+Without `--route`, the run first **rolls the car forward with the wheels
+straight to measure which way it is pointing**, then lays a straight route along
+that heading. The reported orientation is not used: the vehicle's forward axis
+and yaw sign are undocumented, and being wrong sends the car off at an angle
+from the first metre.
+
+That gets the car driving, but a straight line still is not a road. For real
+data, record one:
+
+```
+py windows_record.py town-loop
+py windows_drive.py "Delhi Courier" --mcp --route town-loop.json
+```
 
 Put the car **in gear** (not neutral) and press **Ctrl+R** in game first to reset the vehicle. The script releases throttle
 and brake on exit, including on Ctrl+C. If it ever loses control: Ctrl+C, then
