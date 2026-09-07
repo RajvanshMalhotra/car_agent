@@ -41,7 +41,24 @@ port. OutGauge arrives as 96 bytes, Motion Sim as 88 bytes tagged `BNG1`.
 > **Both are required.** OutGauge carries no position at all, so the car cannot
 > be steered along a route without Motion Sim.
 
-### 3. Run the probe first
+### 2b. BeamNG 0.39 has a built-in MCP server — check what it offers
+
+**Options → Advanced → General → "Enable MCP server"** (0.39+). First-party, no
+BeamNG.tech licence, no third-party mod. It serves Streamable HTTP on
+`http://127.0.0.1:29292/mcp`.
+
+```
+py windows_mcp_probe.py --try-state
+```
+
+This lists every tool the server exposes and writes `mcp_tools.json`. If it
+offers vehicle control and state, the virtual-gamepad path can be retired
+entirely — and if it exposes traffic and collision state, obstacle avoidance
+becomes possible for the first time.
+
+Nothing in that probe drives the car.
+
+### 3. Run the gamepad/telemetry probe
 
 Spawn a vehicle on a road, then:
 
@@ -63,9 +80,14 @@ it prints sizes and raw floats, which is enough to fix the decoder in one pass.
 
 ```
 py windows_drive.py --list
-py windows_drive.py "Delhi Courier" --seconds 300
-py windows_drive.py "Delhi Courier" --ports 4444     # if both streams share 4444
+py windows_record.py town-loop                       # drive the road yourself first
+py windows_drive.py "Delhi Courier" --route town-loop.json --ports 4444
 ```
+
+**Record the road before driving it.** The default route is a synthetic straight
+line with no relationship to the road, so the car will leave the tarmac and the
+run will abandon itself. `windows_record.py` captures the line you drive by hand
+and every behaviour then follows that.
 
 Put the car **in gear** (not neutral) and press **Ctrl+R** in game first to reset the vehicle. The script releases throttle
 and brake on exit, including on Ctrl+C. If it ever loses control: Ctrl+C, then
