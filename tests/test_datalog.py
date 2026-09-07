@@ -272,3 +272,37 @@ def test_the_summary_reports_the_damage_taken(tmp_path):
         log.record(a_state(damage=0.0), ControlInput(0, 0, 0))
         log.record(a_state(damage=750.0), ControlInput(0, 0, 0))
     assert sidecar(tmp_path)["summary"]["max_damage"] == 750.0
+
+
+# -- the log surviving its own failures -----------------------------------
+
+
+def test_the_sidecar_is_written_even_if_its_directory_vanished(tmp_path):
+    # The whole point of this class is that a run survives a crash. It must not
+    # be the thing that crashes.
+    import shutil
+
+    log = open_log(tmp_path)
+    log.record(a_state(), ControlInput(0, 0, 0))
+    shutil.rmtree(tmp_path)
+    log.close()
+    assert sidecar(tmp_path)["summary"]["rows"] == 1
+
+
+def test_a_sidecar_that_cannot_be_written_does_not_raise(tmp_path, monkeypatch):
+    log = open_log(tmp_path)
+    log.record(a_state(), ControlInput(0, 0, 0))
+
+    def refuse(*args, **kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(type(log.sidecar_path), "write_text", refuse)
+    log.close()  # the CSV is the data; losing the summary must not lose the run
+
+
+def test_closing_twice_is_safe(tmp_path):
+    log = open_log(tmp_path)
+    log.record(a_state(), ControlInput(0, 0, 0))
+    log.close()
+    log.close()
+    assert sidecar(tmp_path)["summary"]["rows"] == 1

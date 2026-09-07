@@ -150,6 +150,16 @@ class RunLog:
         if self._handle.closed:
             return
         self._handle.close()
+        # This class exists so a run survives a crash. It must not be the thing
+        # that crashes: the CSV is already on disk, so a sidecar that cannot be
+        # written is reported and swallowed rather than taking the run with it.
+        try:
+            self.sidecar_path.parent.mkdir(parents=True, exist_ok=True)
+            self._write_sidecar()
+        except OSError as error:
+            print(f"warning: could not write {self.sidecar_path}: {error}")
+
+    def _write_sidecar(self) -> None:
         self.sidecar_path.write_text(
             json.dumps(
                 {

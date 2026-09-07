@@ -1,0 +1,8 @@
+{
+  "vehicle": "midtruck",
+  "max_accel_mps2": 5.341685414519727,
+  "max_decel_mps2": 5.212177951953249,
+  "wheelbase_m": 6.501470937098096,
+  "max_steer_rad": 0.5,
+  "measured_at": "2026-09-07T20:32:51.873777+00:00"
+}
