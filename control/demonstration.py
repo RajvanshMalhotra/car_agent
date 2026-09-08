@@ -62,6 +62,29 @@ class Demonstration:
         if len(samples) < 2:
             raise ValueError("a demonstration needs at least two samples")
 
+        # The reported speed is trusted unless it is obviously broken. Whether
+        # BeamNG's MotionSim velocity decodes correctly on a given build is
+        # unverified, and when it read zero throughout, every sample looked
+        # stationary and the whole drive was discarded -- 250 samples recorded,
+        # nothing saved. In that case speed is derived from how far the vehicle
+        # actually went, which cannot be wrong in the same way and is guaranteed
+        # consistent with the path being recorded.
+        travelled = sum(
+            math.dist((samples[i - 1][0], samples[i - 1][1]), (x, y))
+            for i, (x, y, _) in enumerate(samples)
+            if i
+        )
+        if max(speed for _, _, speed in samples) < STOPPED_SPEED_MPS < travelled:
+            steps = [
+                math.dist((samples[i - 1][0], samples[i - 1][1]), (x, y)) * sample_hz
+                for i, (x, y, _) in enumerate(samples)
+                if i
+            ]
+            samples = [
+                (x, y, speed)
+                for (x, y, _), speed in zip(samples, [steps[0]] + steps)
+            ]
+
         points: list[tuple[float, float]] = [(samples[0][0], samples[0][1])]
         speeds: list[float] = [samples[0][2]]
         arc: list[float] = [0.0]

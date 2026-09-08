@@ -7,3 +7,4 @@ runs/
 # Prior-session conversation logs: 2 MB of transcript, not source.
 chat-transcript.jsonl
 chat-transcript.md
+demonstrations/

@@ -162,3 +162,46 @@ def test_the_saved_file_says_what_was_driven(tmp_path):
     assert stored["name"] == "west coast run"
     assert stored["metadata"]["vehicle"] == "etk800"
     assert stored["mean_speed_mps"] > 0.0
+
+
+# -- not trusting the reported speed --------------------------------------
+
+
+def test_a_drive_is_kept_even_if_the_speed_field_reads_zero():
+    # BeamNG's MotionSim velocity fields are not verified against the real
+    # build. If they read zero, every sample looked stationary and the entire
+    # drive was discarded -- 250 samples recorded, nothing saved.
+    samples = [(i * 2.0, 0.0, 0.0) for i in range(250)]
+    demo = Demonstration.from_samples(samples, name="moved", sample_hz=10.0)
+    assert demo.length_m == pytest.approx(498.0, rel=0.02)
+
+
+def test_speed_is_derived_from_how_far_it_actually_went():
+    # 2 m per sample at 10 Hz is 20 m/s, whatever the telemetry claims.
+    samples = [(i * 2.0, 0.0, 0.0) for i in range(250)]
+    demo = Demonstration.from_samples(samples, name="moved", sample_hz=10.0)
+    assert demo.speed_at(100.0) == pytest.approx(20.0, rel=0.15)
+
+
+def test_a_reported_speed_that_agrees_with_the_movement_is_used():
+    samples = [(i * 1.0, 0.0, 10.0) for i in range(250)]
+    demo = Demonstration.from_samples(samples, name="agrees", sample_hz=10.0)
+    assert demo.speed_at(100.0) == pytest.approx(10.0, rel=0.1)
+
+
+def test_a_vehicle_that_genuinely_never_moved_is_still_refused():
+    with pytest.raises(ValueError, match="did not move"):
+        Demonstration.from_samples([(5.0, 5.0, 0.0)] * 250, name="parked",
+                                   sample_hz=10.0)
+
+
+def test_stops_are_still_found_when_the_speed_field_is_useless():
+    samples = (
+        [(i * 1.0, 0.0, 0.0) for i in range(50)]
+        + [(50.0, 0.0, 0.0)] * 300
+        + [(50.0 + i * 1.0, 0.0, 0.0) for i in range(1, 50)]
+    )
+    demo = Demonstration.from_samples(samples, name="stop", sample_hz=10.0)
+    stops = demo.stops()
+    assert len(stops) == 1
+    assert stops[0].duration_s == pytest.approx(30.0, rel=0.2)
