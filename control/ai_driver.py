@@ -46,6 +46,28 @@ WAYPOINT_REACHED_M = 25.0
 #: wrong stretch of road and the route would appear to stall.
 SEARCH_WINDOW_M = 400.0
 
+#: What to ask `drive_to` for, richest first. BeamNG's exact argument names and
+#: enum values are undocumented, and a rejected call does not raise -- the car
+#: simply does not move, which is indistinguishable from the AI being broken. So
+#: the driver drops arguments until the game accepts one, and remembers which.
+#:
+#: Aggression is given up last: without it every behaviour drives identically,
+#: which defeats the point of having behaviours at all.
+DRIVE_TO_ARGUMENTS = (
+    ("aggression", "avoidCars", "driveInLane", "routeSpeed", "routeSpeedMode"),
+    ("aggression", "avoidCars", "driveInLane", "routeSpeed"),
+    ("aggression", "avoidCars", "driveInLane"),
+    ("aggression", "avoidCars"),
+    ("aggression",),
+    (),
+)
+
+
+def _refused(result: Any) -> bool:
+    """BeamNG reports a bad call in the returned text rather than by raising."""
+    text = str(result).lower()
+    return "fail" in text or "error" in text or "unknown" in text
+
 
 def aggression_for(spec: BehaviourSpec) -> float:
     """Collapse a behaviour into the one number the game's AI takes.
@@ -89,6 +111,8 @@ class AIDriver:
         self.progress_m: float | None = 0.0
         self.waypoint: tuple[float, float] | None = None
         self.waypoint_arc_m = 0.0
+        #: Which argument set the game accepted, once we have found one.
+        self.accepted_arguments: tuple[str, ...] | None = None
 
     # -- driving ----------------------------------------------------------
 
@@ -113,14 +137,35 @@ class AIDriver:
         x, y = self.path.point_at(arc)
         self.waypoint = (x, y)
         self.waypoint_arc_m = arc
-        self.backend.drive_to(
-            x=x,
-            y=y,
-            aggression=self.aggression,
-            avoidCars=self.avoid_cars,
-            driveInLane=self.drive_in_lane,
-            routeSpeed=self.target_speed_mps(arc),
-            routeSpeedMode="limit",
+
+        available = {
+            "aggression": self.aggression,
+            "avoidCars": self.avoid_cars,
+            "driveInLane": self.drive_in_lane,
+            "routeSpeed": self.target_speed_mps(arc),
+            "routeSpeedMode": "limit",
+        }
+        candidates = (
+            (self.accepted_arguments,)
+            if self.accepted_arguments is not None
+            else DRIVE_TO_ARGUMENTS
+        )
+        for names in candidates:
+            result = self.backend.drive_to(
+                x=x, y=y, **{name: available[name] for name in names}
+            )
+            if not _refused(result):
+                if self.accepted_arguments is None:
+                    dropped = set(DRIVE_TO_ARGUMENTS[0]) - set(names)
+                    if dropped:
+                        print(f"  note: the game would not take "
+                              f"{', '.join(sorted(dropped))} on drive_to; "
+                              f"driving without them")
+                    self.accepted_arguments = names
+                return
+        raise RuntimeError(
+            "BeamNG would not accept any form of drive_to. Run "
+            "windows_ai_probe.py to see what it says."
         )
 
     def step(self, state: VehicleState) -> None:

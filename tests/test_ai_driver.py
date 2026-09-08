@@ -182,3 +182,81 @@ def test_stopping_hands_control_back():
     driver.start()
     driver.stop()
     assert commands(backend, "set_ai")[-1]["mode"] == "disabled"
+
+
+# -- coping with a game that rejects some arguments ------------------------
+
+
+class PickyBackend(FakeAIBackend):
+    """Accepts drive_to only without the arguments named in `rejects`."""
+
+    def __init__(self, rejects=("routeSpeedMode", "driveInLane")):
+        super().__init__()
+        self.rejects = rejects
+        self.accepted = []
+
+    def drive_to(self, x, y, z=None, **kwargs):
+        self.commands.append(("drive_to", {"x": x, "y": y, **kwargs}))
+        offending = [name for name in self.rejects if name in kwargs]
+        if offending:
+            return f"drive_to failed: unknown argument {offending[0]!r}"
+        self.accepted.append(kwargs)
+        return "ok"
+
+
+def test_it_drops_arguments_the_game_will_not_take():
+    # BeamNG's exact argument names and enum values are undocumented, and a
+    # rejected call means the car simply does not move.
+    backend = PickyBackend()
+    driver = AIDriver(backend, a_behaviour_spec(), straight(), dt=0.05,
+                      speed_limit_mps=20.0)
+    driver.start()
+    driver.step(backend.read_state())
+    assert backend.accepted, "never found a call the game would accept"
+
+
+def test_it_keeps_as_much_control_as_the_game_allows():
+    backend = PickyBackend(rejects=("routeSpeedMode",))
+    driver = AIDriver(backend, a_behaviour_spec(), straight(), dt=0.05,
+                      speed_limit_mps=20.0)
+    driver.start()
+    driver.step(backend.read_state())
+    # driveInLane was not the problem, so it should survive.
+    assert "driveInLane" in backend.accepted[0]
+
+
+def test_it_remembers_what_worked_instead_of_retrying_every_time():
+    backend = PickyBackend()
+    driver = AIDriver(backend, a_behaviour_spec(), straight(1500.0), dt=0.05,
+                      speed_limit_mps=20.0)
+    driver.start()
+    driver.step(backend.read_state())
+    attempts_for_first = len(commands(backend, "drive_to"))
+    backend.x_m = 200.0
+    driver.step(backend.read_state())
+    attempts_for_second = len(commands(backend, "drive_to")) - attempts_for_first
+    assert attempts_for_second == 1
+
+
+def test_aggression_is_the_last_thing_given_up():
+    # Without it every behaviour drives identically, which defeats the point.
+    backend = PickyBackend(rejects=("routeSpeedMode", "driveInLane", "avoidCars"))
+    driver = AIDriver(backend, a_behaviour_spec(), straight(), dt=0.05,
+                      speed_limit_mps=20.0)
+    driver.start()
+    driver.step(backend.read_state())
+    assert "aggression" in backend.accepted[0]
+
+
+def test_a_game_that_refuses_everything_is_reported():
+    backend = PickyBackend(rejects=("aggression",))
+
+    class Hopeless(PickyBackend):
+        def drive_to(self, x, y, z=None, **kwargs):
+            return "drive_to failed: no"
+
+    driver = AIDriver(Hopeless(), a_behaviour_spec(), straight(), dt=0.05,
+                      speed_limit_mps=20.0)
+    driver.start()
+    with pytest.raises(RuntimeError, match="would not accept"):
+        driver.step(driver.backend.read_state())
