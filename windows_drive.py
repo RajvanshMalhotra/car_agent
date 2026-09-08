@@ -40,6 +40,7 @@ from control.calibration import (  # noqa: E402
     CalibrationError, VehicleLimits, calibrate, load_limits, save_limits,
 )
 from control.ai_driver import AIDriver, aggression_for  # noqa: E402
+from control.roam_driver import RoamDriver  # noqa: E402
 from control.demonstration import load_demonstration  # noqa: E402
 from control.route import load_route  # noqa: E402
 from control.policy import DrivingPolicy  # noqa: E402
@@ -102,6 +103,12 @@ def main() -> int:
     parser.add_argument("--tune", action="store_true",
                         help="learn controller gains for the measured vehicle "
                              "(trains against the fake backend, seconds not days)")
+    parser.add_argument("--roam", action="store_true",
+                        help="let the AI drive the road network freely -- no "
+                             "route at all. The simplest way to collect real "
+                             "driving data, and it cannot get lost.")
+    parser.add_argument("--roam-mode", default="span", choices=("span", "random"),
+                        help="'span' covers the network, 'random' wanders")
     parser.add_argument("--beamng-ai", "--beamngai", "--ai", action="store_true",
                         help="let BeamNG's own AI drive: it follows roads and "
                              "avoids traffic, which nothing here can. Needs a "
@@ -213,9 +220,9 @@ def main() -> int:
     vehicle = vehicle or "unknown"
 
     limits = load_limits(LIMITS_DIR, vehicle)
-    if policy is not None or args.beamng_ai:
-        # Neither needs the vehicle measured: the policy was trained across
-        # vehicles, and with --beamng-ai the game is driving its own car.
+    if policy is not None or args.beamng_ai or args.roam:
+        # None of these needs the vehicle measured: the policy was trained
+        # across vehicles, and when the game drives it is driving its own car.
         limits = limits or VehicleLimits(vehicle, 3.0, 8.0, 2.7)
     elif args.calibrate or limits is None:
         print(f"  calibrating '{vehicle}' (about 20 s of driving)...")
@@ -235,7 +242,7 @@ def main() -> int:
               f"decel {limits.max_decel_mps2:.2f} wheelbase {limits.wheelbase_m:.2f} m")
 
     gains = ControllerGains.default()
-    if args.tune and policy is None:
+    if args.tune and policy is None and not (args.beamng_ai or args.roam):
         print("  tuning gains against the fake backend...")
         gains = tune(spec, limits, seed=args.seed)
         print(f"  gains     : kp={gains.kp:.2f} ki={gains.ki:.2f} kd={gains.kd:.3f} "
@@ -245,7 +252,11 @@ def main() -> int:
     # than trusting a reported orientation whose conventions are undocumented,
     # roll the car forward briefly and measure which way it actually went.
     backend.reset()
-    if demonstration is not None:
+    if args.roam:
+        route = straight_route_from((0.0, 0.0), 0.0, 10.0)  # unused; kept for the log
+        stops = []
+        print("  route  : none -- the AI picks its own way around the map")
+    elif demonstration is not None:
         # A recorded drive is already in world coordinates, so there is nothing
         # to align: the route is where the human actually drove.
         route = demonstration.to_path()
@@ -310,7 +321,7 @@ def main() -> int:
     if max_deviation is None:
         max_deviation = 30.0 if demonstration is not None else 8.0
 
-    if args.beamng_ai:
+    if args.roam or args.beamng_ai:
         if not getattr(backend, "has_road_network", lambda: True)():
             print("\n  This level has no road network, so BeamNG's AI has "
                   "nowhere to drive.", file=sys.stderr)
@@ -318,13 +329,18 @@ def main() -> int:
                   file=sys.stderr)
             backend.close()
             return 1
-        driver = AIDriver(
-            backend, spec, route, dt=dt, speed_limit_mps=args.speed_limit,
-            demonstration=demonstration,
-        )
+        if args.roam:
+            driver = RoamDriver(backend, spec, mode=args.roam_mode)
+            print(f"  driver : BeamNG's AI roaming ({args.roam_mode}), aggression "
+                  f"{driver.aggression:.2f} (from '{spec.name}') -- no route")
+        else:
+            driver = AIDriver(
+                backend, spec, route, dt=dt, speed_limit_mps=args.speed_limit,
+                demonstration=demonstration,
+            )
+            print(f"  driver : BeamNG's own AI, aggression "
+                  f"{driver.aggression:.2f} (from '{spec.name}')")
         driver.start()
-        print(f"  driver : BeamNG's own AI, aggression "
-              f"{driver.aggression:.2f} (from '{spec.name}')")
     elif policy is not None:
         driver = PolicyDriver(
             policy, spec, route, dt=dt, speed_limit_mps=args.speed_limit,
@@ -347,7 +363,10 @@ def main() -> int:
     log_path = LOG_DIR / f"{time.strftime('%Y%m%d-%H%M%S')}_{spec.spec_hash}.csv"
     print(f"behaviour : {spec.name}  [{spec.spec_hash}]")
     print(f"log       : {log_path}")
-    print(f"route     : {route.length_m:.0f} m, limit {args.speed_limit} m/s")
+    if args.roam:
+        print(f"route     : none, {args.seconds:.0f}s of free driving")
+    else:
+        print(f"route     : {route.length_m:.0f} m, limit {args.speed_limit} m/s")
     print("Ctrl+C to stop. Controls are released on exit.\n")
 
     started = time.monotonic()

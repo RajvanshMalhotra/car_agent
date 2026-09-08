@@ -116,7 +116,17 @@ def main() -> int:
     print("  Each attempt is watched for movement. The first one that moves the")
     print("  car is the call this project should be using.")
 
-    ahead = {"x": x + args.distance, "y": y, "z": z}
+    def target_ahead():
+        """A point ahead of where the car is *now*.
+
+        Computed per attempt: the earlier free-driving attempts move the car
+        hundreds of metres, and aiming a later attempt at the original position
+        tests whether the car will drive somewhere it has already left. The
+        first version of this probe did exactly that and its last two results
+        were meaningless.
+        """
+        here_x, here_y, here_z, _ = position_of(client)
+        return {"x": here_x + args.distance, "y": here_y, "z": here_z}
 
     attempts = [
         ("A. span mode -- drive the roads, no target at all",
@@ -124,11 +134,11 @@ def main() -> int:
         ("B. random mode -- the other free-driving mode",
          "set_ai", {"id": vehicle_id, "mode": "random"}),
         ("C. drive_to a point ahead, nothing else specified",
-         "drive_to", {"id": vehicle_id, "pos": ahead}),
+         "drive_to", {"id": vehicle_id, "pos": "AHEAD"}),
         ("D. drive_to with aggression",
-         "drive_to", {"id": vehicle_id, "pos": ahead, "aggression": 0.8}),
+         "drive_to", {"id": vehicle_id, "pos": "AHEAD", "aggression": 0.8}),
         ("E. drive_to with everything this project sends",
-         "drive_to", {"id": vehicle_id, "pos": ahead, "aggression": 0.8,
+         "drive_to", {"id": vehicle_id, "pos": "AHEAD", "aggression": 0.8,
                       "avoidCars": True, "driveInLane": True,
                       "routeSpeed": 12.0, "routeSpeedMode": "limit"}),
     ]
@@ -136,6 +146,11 @@ def main() -> int:
     worked = []
     for label, tool, arguments in attempts:
         client.call("set_ai", {"id": vehicle_id, "mode": "disabled"})
+        time.sleep(0.5)
+        arguments = {
+            key: (target_ahead() if value == "AHEAD" else value)
+            for key, value in arguments.items()
+        }
         if attempt(client, label, tool, arguments):
             worked.append(label)
 
