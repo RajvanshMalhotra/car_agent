@@ -145,6 +145,20 @@ def main() -> int:
                         help="name for the cached calibration (default: ask the game)")
     args = parser.parse_args()
 
+    # Checked before anything is opened or started. Doing it later meant the
+    # AI had already been engaged, and bailing out left the game driving the
+    # car after the script had exited.
+    refuge = None
+    if args.relocate_to:
+        refuge = load_place(PLACES_DIR, args.relocate_to)
+        if refuge is None:
+            print(f"no saved place called {args.relocate_to!r}. "
+                  f"Known: {', '.join(place_names(PLACES_DIR)) or 'none'}",
+                  file=sys.stderr)
+            print("Drive somewhere easy and run:  py windows_place.py <name>",
+                  file=sys.stderr)
+            return 1
+
     specs = load_specs()
     if args.list or not args.behaviour:
         for spec in specs:
@@ -392,20 +406,6 @@ def main() -> int:
     else:
         print(f"route     : {route.length_m:.0f} m, limit {args.speed_limit} m/s")
     print("Ctrl+C to stop. Controls are released on exit.\n")
-
-    refuge = None
-    if args.relocate_to:
-        refuge = load_place(PLACES_DIR, args.relocate_to)
-        if refuge is None:
-            print(f"no saved place called {args.relocate_to!r}. "
-                  f"Known: {', '.join(place_names(PLACES_DIR)) or 'none'}",
-                  file=sys.stderr)
-            print("Drive somewhere easy and run:  py windows_place.py <name>",
-                  file=sys.stderr)
-            backend.close()
-            return 1
-        print(f"  refuge : '{refuge.name}' at ({refuge.x_m:.0f}, {refuge.y_m:.0f}) "
-              f"-- the car goes here if it keeps crashing")
 
     health = HealthMonitor(repair_above=args.repair_above,
                            stuck_after_s=args.stuck_after,
