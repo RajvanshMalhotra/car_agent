@@ -38,6 +38,14 @@ WANTED = {
     "collision / damage": ("damage", "collision", "crash"),
     "time stepping / pause": ("step", "pause", "time"),
     "sensors": ("sensor", "lidar", "camera", "radar"),
+    # The one that decides how a campaign has to be shaped. Ambient
+    # temperature moves corrosion ~2.9x against driving style's 1.2-1.5x, so
+    # it is the dominant variable. If the game can set it, an ambient sweep is
+    # real simulation; if it cannot, ambient only enters our own bay model and
+    # sweeping it is arithmetic on one drive, not new information.
+    "environment / weather / ambient": (
+        "weather", "environment", "temperature", "ambient", "climate", "time_of_day"
+    ),
 }
 
 
