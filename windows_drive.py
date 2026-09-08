@@ -102,7 +102,7 @@ def main() -> int:
     parser.add_argument("--tune", action="store_true",
                         help="learn controller gains for the measured vehicle "
                              "(trains against the fake backend, seconds not days)")
-    parser.add_argument("--beamng-ai", action="store_true",
+    parser.add_argument("--beamng-ai", "--beamngai", "--ai", action="store_true",
                         help="let BeamNG's own AI drive: it follows roads and "
                              "avoids traffic, which nothing here can. Needs a "
                              "real map -- an empty level has no road network.")
