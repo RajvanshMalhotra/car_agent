@@ -137,8 +137,9 @@ def finish(samples, args) -> int:
     print(f"  you drove it at {demo.mean_speed_mps:.1f} m/s on average, "
           f"with {len(demo.stops())} stop(s)")
     print(f"\nNow have the agent drive it, in whatever style you ask for:")
-    print(f"  py windows_drive.py \"Delhi Courier\" --demo {args.name} --mcp")
-    print(f"  py windows_drive.py \"calm commuter\" --demo {args.name} --mcp")
+    for style in ("Aggressive", "economical", "ordinary"):
+        print(f"  py windows_drive.py \"{style}\" --demo {args.name} --mcp")
+    print("\n  (py windows_drive.py --list shows every style available)")
     return 0
 
 

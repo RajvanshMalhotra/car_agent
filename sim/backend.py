@@ -43,6 +43,7 @@ class VehicleState:
     sim_time_s: float = 0.0
     x_m: float = 0.0
     y_m: float = 0.0
+    z_m: float = 0.0
     heading_rad: float = 0.0
     speed_mps: float = 0.0
 

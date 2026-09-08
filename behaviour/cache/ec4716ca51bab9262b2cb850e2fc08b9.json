@@ -1,0 +1,26 @@
+{
+  "provenance": {
+    "description": "an aggressive driver: brisk away from every stop, late hard braking, carries speed through bends, tailgates, impatient at junctions",
+    "generated_at": "2026-09-08T00:29:41.723023+00:00",
+    "model": "deepseek-v4-pro",
+    "prompt_version": 1,
+    "spec_hash": "8450998125036789"
+  },
+  "spec": {
+    "accel_limit_mps2": 3.8,
+    "ambient_temp_c": 20.0,
+    "cold_start": true,
+    "corner_speed_factor": 1.2,
+    "decel_limit_mps2": 7.0,
+    "erraticness": 0.4,
+    "following_distance_s": 0.5,
+    "hvac_setting": 0.5,
+    "idle_fraction": 0.1,
+    "jerk_limit_mps3": 12.0,
+    "name": "Aggressive Driver",
+    "reaction_lag_s": 0.2,
+    "start_stop_enabled": true,
+    "target_speed_factor": 1.2,
+    "trip_duration_s": 1800.0
+  }
+}

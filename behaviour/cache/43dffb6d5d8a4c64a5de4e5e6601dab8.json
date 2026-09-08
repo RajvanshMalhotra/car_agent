@@ -1,0 +1,26 @@
+{
+  "provenance": {
+    "description": "an economical driver trying to save fuel: gentle throttle, coasts up to stops rather than braking late, generous following distance, never rushes",
+    "generated_at": "2026-09-08T00:29:59.664844+00:00",
+    "model": "deepseek-v4-pro",
+    "prompt_version": 1,
+    "spec_hash": "26a0d77a6f3f8aba"
+  },
+  "spec": {
+    "accel_limit_mps2": 1.2,
+    "ambient_temp_c": 20.0,
+    "cold_start": true,
+    "corner_speed_factor": 0.75,
+    "decel_limit_mps2": 2.0,
+    "erraticness": 0.1,
+    "following_distance_s": 3.0,
+    "hvac_setting": 0.2,
+    "idle_fraction": 0.05,
+    "jerk_limit_mps3": 1.5,
+    "name": "economical gentle driver",
+    "reaction_lag_s": 0.8,
+    "start_stop_enabled": true,
+    "target_speed_factor": 0.85,
+    "trip_duration_s": 1800.0
+  }
+}

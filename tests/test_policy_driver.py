@@ -98,7 +98,8 @@ def test_it_reports_how_far_off_the_route_it_is():
 
 def test_it_knows_when_it_has_lost_the_route():
     driver, backend = a_driver()
-    driver.step(backend.read_state())
+    while driver.travelled_m < driver.lost_grace_m + 20.0:
+        backend.apply_control(driver.step(backend.read_state()))
     backend.state.y_m = 40.0
     assert driver.is_lost(backend.read_state())
 
@@ -181,3 +182,76 @@ def test_it_actually_drives_the_demonstrated_route():
             break
     assert driver.progress_m > 300.0
     assert abs(backend.read_state().y_m) < 2.0
+
+
+# -- room to turn onto the line -------------------------------------------
+
+
+def test_it_is_not_judged_lost_before_it_has_had_room_to_converge():
+    # Same reasoning as the hand-built driver: a car put on the start of a route
+    # facing the wrong way needs road to turn onto the line. Judging it in the
+    # first few metres aborts runs that would have recovered.
+    driver, backend = a_driver()
+    backend.state.y_m = 6.0
+    driver.step(backend.read_state())
+    assert not driver.is_lost(backend.read_state())
+
+
+def test_it_holds_its_line_against_a_steady_sideways_drag():
+    # 10 m/s of sideways drag settles at about 4 m of offset: the policy
+    # counteracts it rather than being pushed off the road. Worth pinning,
+    # because it is easy to assume the opposite and write a test that fails.
+    driver, backend = a_driver()
+    while driver.travelled_m < driver.lost_grace_m + 20.0:
+        backend.apply_control(driver.step(backend.read_state()))
+    for _ in range(int(30 / DT)):
+        backend.apply_control(driver.step(backend.read_state()))
+        backend.state.y_m += 0.5
+    assert driver.deviation_m(backend.read_state()) < 6.0
+    assert not driver.is_lost(backend.read_state())
+
+
+def test_the_grace_distance_is_configurable():
+    from control.policy_driver import PolicyDriver
+
+    backend = FakeBackend(dt=DT)
+    backend.reset()
+    driver = PolicyDriver(
+        TRAINED, a_behaviour_spec(), straight(), dt=DT, speed_limit_mps=15.0,
+        lost_grace_m=0.0,
+    )
+    driver.step(backend.read_state())
+    backend.state.y_m = 40.0
+    assert driver.is_lost(backend.read_state())
+
+
+def test_restarting_gives_it_room_again():
+    # After a recovery the car is somewhere new and has to turn onto the route
+    # afresh, so the grace has to come back with it.
+    driver, backend = a_driver()
+    for _ in range(int(30 / DT)):
+        backend.apply_control(driver.step(backend.read_state()))
+    driver.restart(straight())
+    backend.state.y_m = 6.0
+    assert not driver.is_lost(backend.read_state())
+
+
+def test_rejoining_mid_route_finds_where_it_actually_is():
+    # After a recovery the car rejoins partway along, not at the start.
+    # Assuming progress is zero makes the windowed lookup search the wrong
+    # stretch of road, and the driver behaves as though the route is elsewhere.
+    driver, backend = a_driver(path=straight(1500.0))
+    backend.state.x_m, backend.state.y_m = 900.0, 0.0
+    driver.restart(straight(1500.0))
+    driver.step(backend.read_state())
+    assert driver.progress_m == pytest.approx(900.0, abs=5.0)
+
+
+def test_it_keeps_driving_after_rejoining_mid_route():
+    driver, backend = a_driver(path=straight(1500.0))
+    backend.state.x_m, backend.state.y_m = 900.0, 0.0
+    driver.restart(straight(1500.0))
+    for _ in range(int(30 / DT)):
+        backend.apply_control(driver.step(backend.read_state()))
+    assert backend.read_state().speed_mps > 2.0
+    assert backend.read_state().x_m > 930.0

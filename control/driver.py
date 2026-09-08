@@ -252,7 +252,11 @@ class Driver:
     def restart(self, path: Path) -> None:
         """Follow a new route from wherever the vehicle now is, after recovery."""
         self.path = path
-        self.progress_m = 0.0
+        # Progress is left unknown rather than reset to zero: the car rejoins
+        # partway along, and assuming the start makes the windowed lookup search
+        # the wrong stretch of road. The next step re-derives it with a full
+        # search.
+        self.progress_m = None
         self.decision_progress_m = 0.0
         self.travelled_m = 0.0
         self._previous_position = None

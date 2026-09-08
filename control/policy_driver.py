@@ -28,6 +28,11 @@ NOMINAL_LATERAL_ACCEL_MPS2 = 3.0
 #: How far off the route counts as lost.
 DEFAULT_MAX_DEVIATION_M = 10.0
 
+#: A car put on a route facing the wrong way needs road to turn onto the line.
+#: Judging it in the first few metres aborts runs that would have converged --
+#: the same reason the hand-built driver has this.
+DEFAULT_LOST_GRACE_M = 40.0
+
 #: A waypoint counts as reached once the car is within this of it and stopped.
 STOP_REACHED_M = 8.0
 
@@ -56,6 +61,7 @@ class PolicyDriver:
         stops: Sequence[Any] | None = None,
         max_deviation_m: float = DEFAULT_MAX_DEVIATION_M,
         demonstration: Any | None = None,
+        lost_grace_m: float = DEFAULT_LOST_GRACE_M,
     ) -> None:
         self.policy = policy
         self.spec = spec
@@ -74,6 +80,9 @@ class PolicyDriver:
         self.progress_m = 0.0
         self.previous_steering = 0.0
         self.wander = 0.0
+        self.lost_grace_m = lost_grace_m
+        self.travelled_m = 0.0
+        self._previous_position: tuple[float, float] | None = None
 
     # -- target speed: the behaviour's business, not the policy's ---------
 
@@ -136,6 +145,11 @@ class PolicyDriver:
     # -- the loop ---------------------------------------------------------
 
     def step(self, state: VehicleState) -> ControlInput:
+        position = (state.x_m, state.y_m)
+        if self._previous_position is not None:
+            self.travelled_m += math.dist(position, self._previous_position)
+        self._previous_position = position
+
         self.progress_m = self.path.closest_arc_length(
             (state.x_m, state.y_m), near_arc_length=self.progress_m
         )
@@ -166,9 +180,17 @@ class PolicyDriver:
         being chased across the map.
         """
         self.path = path
-        self.progress_m = 0.0
+        # Progress is left unknown rather than reset to zero: the car rejoins
+        # partway along, and assuming the start makes the windowed lookup search
+        # the wrong stretch of road. The next step re-derives it with a full
+        # search.
+        self.progress_m = None
         self.previous_steering = 0.0
         self.waiting_until_s = None
+        # The car is somewhere new and has to turn onto the route afresh, so
+        # the grace comes back with it.
+        self.travelled_m = 0.0
+        self._previous_position = None
 
     # -- the same questions the hand-built driver answers ------------------
 
@@ -180,11 +202,15 @@ class PolicyDriver:
         return math.hypot(near_x - state.x_m, near_y - state.y_m)
 
     def is_lost(self, state: VehicleState) -> bool:
+        if self.travelled_m < self.lost_grace_m:
+            return False
         return self.deviation_m(state) > self.max_deviation_m
 
     def is_finished(self, state: VehicleState) -> bool:
         if self._next_stop() is not None:
             return False
         return (
-            self.progress_m >= self.path.length_m - 3.0 and state.speed_mps < 0.5
+            self.progress_m is not None
+            and self.progress_m >= self.path.length_m - 3.0
+            and state.speed_mps < 0.5
         )

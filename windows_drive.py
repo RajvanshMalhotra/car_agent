@@ -39,6 +39,7 @@ from control.alignment import measure_heading, straight_route_from  # noqa: E402
 from control.calibration import (  # noqa: E402
     CalibrationError, VehicleLimits, calibrate, load_limits, save_limits,
 )
+from control.demonstration import load_demonstration  # noqa: E402
 from control.route import load_route  # noqa: E402
 from control.policy import DrivingPolicy  # noqa: E402
 from control.policy_driver import PolicyDriver  # noqa: E402
@@ -50,6 +51,7 @@ from sim.mcp_backend import MCPBackend  # noqa: E402
 CACHE_DIR = FilePath(__file__).parent / "behaviour" / "cache"
 LOG_DIR = FilePath(__file__).parent / "runs"
 LIMITS_DIR = FilePath(__file__).parent / "vehicles"
+DEMO_DIR = FilePath(__file__).parent / "demonstrations"
 ROUTE_SPEC_DIR = FilePath(__file__).parent / "behaviour" / "routes"
 
 
@@ -79,6 +81,8 @@ def main() -> int:
     parser.add_argument("--route-length", type=float, default=3000.0)
     parser.add_argument("--route", help="a route recorded with windows_record.py")
     parser.add_argument("--manoeuvres", help="an LLM-designed route: part of its name")
+    parser.add_argument("--demo", help="a drive recorded with windows_record.py -- "
+                                       "its route AND the speed you drove it at")
     parser.add_argument("--crash-damage", type=float, default=100.0,
                         help="damage above which a run is treated as a crash")
     parser.add_argument("--max-deviation", type=float, default=8.0,
@@ -116,12 +120,29 @@ def main() -> int:
         if args.behaviour == s.spec_hash or args.behaviour.lower() in s.name.lower()
     ]
     if not matches:
-        print(f"no cached behaviour matching {args.behaviour!r}", file=sys.stderr)
+        print(f"no cached behaviour matching {args.behaviour!r}. Available:",
+              file=sys.stderr)
+        for spec in specs:
+            print(f"  {spec.spec_hash}  {spec.name}", file=sys.stderr)
+        print("\nGenerate a new one with:  ./agent.py generate \"<description>\"",
+              file=sys.stderr)
         return 1
     spec = matches[0]
 
     stops = []
     manoeuvre_route = None
+    demonstration = None
+    if args.demo:
+        for candidate in (FilePath(args.demo), DEMO_DIR / args.demo,
+                          DEMO_DIR / f"{args.demo}.json"):
+            if candidate.exists():
+                demonstration = load_demonstration(candidate)
+                break
+        if demonstration is None:
+            print(f"no recorded drive matching {args.demo!r} in {DEMO_DIR}",
+                  file=sys.stderr)
+            return 1
+
     if args.manoeuvres:
         from behaviour.route_spec import RouteSpec
 
@@ -134,7 +155,10 @@ def main() -> int:
             print(f"no cached route matching {args.manoeuvres!r}", file=sys.stderr)
             return 1
 
-    if args.route:
+    if demonstration is not None:
+        recorded = None
+        scenario = f"demo-{demonstration.name}"
+    elif args.route:
         route_file = FilePath(args.route)
         if not route_file.exists():
             route_file = FilePath(__file__).parent / "routes" / args.route
@@ -156,6 +180,9 @@ def main() -> int:
             ambient_temp_c=spec.ambient_temp_c,
             cold_start=spec.cold_start,
             crash_damage=args.crash_damage,
+            # A recorded drive is in world coordinates; everything else starts
+            # wherever the car happens to be.
+            rebase_origin=demonstration is None,
         )
     else:
         backend = GamepadUDPBackend(
@@ -208,7 +235,27 @@ def main() -> int:
     # than trusting a reported orientation whose conventions are undocumented,
     # roll the car forward briefly and measure which way it actually went.
     backend.reset()
-    if recorded is not None:
+    if demonstration is not None:
+        # A recorded drive is already in world coordinates, so there is nothing
+        # to align: the route is where the human actually drove.
+        route = demonstration.to_path()
+        stops = demonstration.stops()
+        print(f"  demo   : '{demonstration.name}', {route.length_m:.0f} m, "
+              f"you drove it at {demonstration.mean_speed_mps:.1f} m/s "
+              f"with {len(stops)} stop(s)")
+        print(f"  style  : {spec.name} -- speed x{spec.target_speed_factor:.2f} "
+              f"of what you drove")
+        # The recording ends at B, so the car is parked at the end of its own
+        # route. Put it back at A before asking it to drive there.
+        start = route.points[0]
+        if hasattr(backend, "teleport_to"):
+            state = backend.read_state()
+            if math.dist((state.x_m, state.y_m), start) > 5.0:
+                print(f"  moving the car back to the start of the route...")
+                backend.teleport_to(start[0], start[1])
+        else:
+            print("  NOTE: drive the car back to the start of the route first.")
+    elif recorded is not None:
         route = load_route(recorded)
         print(f"  route: {recorded.name}, {route.length_m:.0f} m")
     else:
@@ -237,6 +284,10 @@ def main() -> int:
 
     def build_route():
         """Lay a route from wherever the car is now, facing wherever it faces."""
+        if demonstration is not None:
+            # After a recovery the car rejoins the recorded drive wherever it
+            # is nearest; the route itself does not move.
+            return demonstration.to_path()
         x, y, heading = measure_heading(backend, dt=dt)
         if manoeuvre_route is not None:
             return manoeuvre_route.to_path(origin=(x, y), heading_rad=heading)
@@ -246,6 +297,7 @@ def main() -> int:
         driver = PolicyDriver(
             policy, spec, route, dt=dt, speed_limit_mps=args.speed_limit,
             seed=args.seed, stops=stops, max_deviation_m=args.max_deviation,
+            demonstration=demonstration,
         )
     else:
         driver = Driver(
@@ -304,7 +356,17 @@ def main() -> int:
                     recoveries += 1
                     print(f"\n  {why} at t={elapsed:.1f}s -- repairing and "
                           f"carrying on ({recoveries}/{args.recoveries})")
-                    backend.recover()
+                    if demonstration is not None and hasattr(backend, "teleport_to"):
+                        # Rejoin the recorded route at the point already
+                        # reached, rather than letting the game drop the car on
+                        # whatever road is nearest -- which for a recorded drive
+                        # may be nowhere near it.
+                        rejoin = route.point_at(
+                            max(0.0, driver.progress_m - 10.0)
+                        )
+                        backend.teleport_to(rejoin[0], rejoin[1])
+                    else:
+                        backend.recover()
                     # A recovered car is put back on the nearest road, which is
                     # somewhere else entirely, so the route is re-laid from
                     # there rather than the old one being chased across the map.

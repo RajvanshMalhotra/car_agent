@@ -57,6 +57,10 @@ class StubServer:
             return list(self.vehicles)
         if name == "get_vehicle_damage":
             return {"id": 87942, "damageSum": self.damage}
+        if name == "set_position":
+            self.pos = dict(arguments["pos"])
+            self.damage = 0.0
+            return "ok"
         if name in ("reset_vehicle", "recover_vehicle", "pause_physics",
                     "resume_physics"):
             return "ok"
@@ -315,3 +319,83 @@ def test_junk_in_a_numeric_field_is_ignored_rather_than_fatal(backend, stub):
     stub.electrics["watertemp"] = "n/a"
     backend.read_state()
     assert backend.read_state().coolant_temp_c > 0.0
+
+
+# -- world coordinates, for following a recorded drive --------------------
+
+
+def test_position_is_rebased_to_the_start_by_default(backend, stub):
+    stub.pos = {"x": 9531.4, "y": 383.4, "z": 0.6}
+    backend.reset()
+    assert backend.read_state().x_m == pytest.approx(0.0, abs=0.01)
+
+
+def test_world_coordinates_can_be_reported_instead(stub):
+    # A recorded drive is a fixed place in the world. Rebasing to wherever this
+    # run happened to start puts the vehicle kilometres from its own route.
+    stub.pos = {"x": 9531.4, "y": 383.4, "z": 0.6}
+    backend = MCPBackend(client=stub, ambient_temp_c=20.0, rebase_origin=False)
+    try:
+        backend.reset()
+        state = backend.read_state()
+        assert state.x_m == pytest.approx(9531.4, abs=0.01)
+        assert state.y_m == pytest.approx(383.4, abs=0.01)
+    finally:
+        backend.close()
+
+
+def test_world_coordinates_still_move_with_the_vehicle(stub):
+    backend = MCPBackend(client=stub, ambient_temp_c=20.0, rebase_origin=False)
+    try:
+        backend.reset()
+        stub.pos = {"x": 9561.4, "y": 383.4, "z": 0.6}
+        assert backend.read_state().x_m == pytest.approx(9561.4, abs=0.01)
+    finally:
+        backend.close()
+
+
+def test_a_recovery_does_not_rebase_world_coordinates(stub):
+    backend = MCPBackend(client=stub, ambient_temp_c=20.0, rebase_origin=False)
+    try:
+        backend.reset()
+        stub.pos = {"x": 9600.0, "y": 400.0, "z": 0.6}
+        backend.recover()
+        assert backend.read_state().x_m == pytest.approx(9600.0, abs=0.01)
+    finally:
+        backend.close()
+
+
+# -- putting the car back at the start ------------------------------------
+
+
+def test_the_vehicle_can_be_moved_to_a_point(backend, stub):
+    backend.teleport_to(9600.0, 420.0)
+    call = [args for name, args in stub.calls if name == "set_position"][0]
+    assert call["pos"]["x"] == pytest.approx(9600.0)
+    assert call["pos"]["y"] == pytest.approx(420.0)
+
+
+def test_the_teleport_is_addressed_to_the_player_vehicle(backend, stub):
+    backend.teleport_to(1.0, 2.0)
+    call = [args for name, args in stub.calls if name == "set_position"][0]
+    assert call["id"] == 87942
+
+
+def test_the_controls_are_released_before_teleporting(backend, stub):
+    backend.apply_control(ControlInput(1.0, 0.0, 0.5))
+    backend.teleport_to(1.0, 2.0)
+    assert stub.inputs["throttle"] == pytest.approx(0.0)
+
+
+def test_teleporting_does_not_count_as_a_crash(backend, stub):
+    # set_position repairs the vehicle, and a repair is not damage this run did.
+    backend.reset()
+    stub.damage = 900.0
+    backend.teleport_to(1.0, 2.0)
+    assert not backend.has_crashed()
+
+
+def test_the_reported_height_is_kept_if_not_given(backend, stub):
+    backend.teleport_to(1.0, 2.0)
+    call = [args for name, args in stub.calls if name == "set_position"][0]
+    assert "z" in call["pos"]

@@ -1,0 +1,26 @@
+{
+  "provenance": {
+    "description": "an ordinary unhurried driver on a familiar route, nothing notable about the way they drive",
+    "generated_at": "2026-09-08T00:30:10.184060+00:00",
+    "model": "deepseek-v4-pro",
+    "prompt_version": 1,
+    "spec_hash": "89cbaf1635b055a0"
+  },
+  "spec": {
+    "accel_limit_mps2": 1.5,
+    "ambient_temp_c": 20.0,
+    "cold_start": true,
+    "corner_speed_factor": 1.0,
+    "decel_limit_mps2": 2.5,
+    "erraticness": 0.2,
+    "following_distance_s": 2.0,
+    "hvac_setting": 0.3,
+    "idle_fraction": 0.1,
+    "jerk_limit_mps3": 5.0,
+    "name": "ordinary unhurried",
+    "reaction_lag_s": 0.7,
+    "start_stop_enabled": true,
+    "target_speed_factor": 0.9,
+    "trip_duration_s": 1800.0
+  }
+}

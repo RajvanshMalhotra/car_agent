@@ -94,6 +94,7 @@ class MCPBackend(SimBackend):
         ambient_temp_c: float = 20.0,
         cold_start: bool = True,
         crash_damage: float = DEFAULT_CRASH_DAMAGE,
+        rebase_origin: bool = True,
     ) -> None:
         if client is None:
             from sim.mcp_client import DEFAULT_ENDPOINT, MCPClient
@@ -104,6 +105,11 @@ class MCPBackend(SimBackend):
         self.ambient_temp_c = ambient_temp_c
         self.cold_start = cold_start
         self.crash_damage = crash_damage
+        # Positions are normally reported relative to where the run started, so
+        # a synthetic route can begin at the origin. A *recorded* drive is a
+        # fixed place in the world, though -- rebasing it puts the vehicle
+        # kilometres from its own route.
+        self.rebase_origin = rebase_origin
 
         self.engine = EngineModel(ambient_temp_c, cold_start=cold_start)
         self.engine.start()
@@ -162,7 +168,7 @@ class MCPBackend(SimBackend):
         if position:
             x, y = float(position["x"]), float(position["y"])
             if self._origin is None:
-                self._origin = (x, y)
+                self._origin = (x, y) if self.rebase_origin else (0.0, 0.0)
             if self._last_position is not None:
                 dx, dy = x - self._last_position[0], y - self._last_position[1]
                 # Heading from displacement: guaranteed to be in the same frame
@@ -173,6 +179,7 @@ class MCPBackend(SimBackend):
             self._last_position = (x, y)
             state.x_m = x - self._origin[0]
             state.y_m = y - self._origin[1]
+            state.z_m = float(position.get("z", state.z_m))
         if "speed" in vehicle:
             state.speed_mps = float(vehicle["speed"])
         if "damage" in vehicle:
@@ -228,6 +235,30 @@ class MCPBackend(SimBackend):
         )
         snapshot = self.read_state()
         # Damage already on the car is not this run's fault.
+        self._baseline_damage = self._damage
+        return snapshot
+
+    def teleport_to(self, x: float, y: float, z: float | None = None) -> VehicleState:
+        """Put the vehicle at a point, repaired.
+
+        Needed to drive a recorded route: the recording ends at B, so the car
+        is already parked at the end of its own route and has nothing left to
+        drive. `set_position` also repairs, which is why the damage baseline is
+        retaken -- a repair is not damage this run did.
+
+        Rotation is left alone deliberately. BeamNG's convention for a
+        vehicle's forward axis is undocumented, and facing the car backwards
+        would be worse than leaving it to steer onto the route itself.
+        """
+        for event in ("throttle", "brake", "steering"):
+            self._inject(event, 0.0, force=True)
+        height = self.state.z_m if z is None else z
+        self.client.call(
+            "set_position",
+            {"id": self.vehicle_id, "pos": {"x": x, "y": y, "z": height}},
+        )
+        self._last_position = None
+        snapshot = self.read_state()
         self._baseline_damage = self._damage
         return snapshot
 
