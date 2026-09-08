@@ -28,6 +28,12 @@ NOMINAL_LATERAL_ACCEL_MPS2 = 3.0
 #: How far off the route counts as lost.
 DEFAULT_MAX_DEVIATION_M = 10.0
 
+#: How long the vehicle has to stay off the route before the run gives up.
+#: Driving the same route in a different style takes a different line through a
+#: corner, so a moment wide of the recorded path is normal -- teleporting the
+#: car and starting again over one is far more disruptive than the excursion.
+DEFAULT_LOST_PERSISTENCE_S = 4.0
+
 #: A car put on a route facing the wrong way needs road to turn onto the line.
 #: Judging it in the first few metres aborts runs that would have converged --
 #: the same reason the hand-built driver has this.
@@ -62,6 +68,7 @@ class PolicyDriver:
         max_deviation_m: float = DEFAULT_MAX_DEVIATION_M,
         demonstration: Any | None = None,
         lost_grace_m: float = DEFAULT_LOST_GRACE_M,
+        lost_persistence_s: float = DEFAULT_LOST_PERSISTENCE_S,
     ) -> None:
         self.policy = policy
         self.spec = spec
@@ -81,6 +88,8 @@ class PolicyDriver:
         self.previous_steering = 0.0
         self.wander = 0.0
         self.lost_grace_m = lost_grace_m
+        self.lost_persistence_s = lost_persistence_s
+        self.off_route_s = 0.0
         self.travelled_m = 0.0
         self._previous_position: tuple[float, float] | None = None
 
@@ -154,6 +163,11 @@ class PolicyDriver:
             (state.x_m, state.y_m), near_arc_length=self.progress_m
         )
         self._update_stop(state)
+        # Time spent off the route, so a momentary excursion does not end a run.
+        if self.deviation_m(state) > self.max_deviation_m:
+            self.off_route_s += self.dt
+        else:
+            self.off_route_s = 0.0
         target = self.target_speed_mps(state)
         control = self.policy.act(
             observe(
@@ -190,6 +204,7 @@ class PolicyDriver:
         # The car is somewhere new and has to turn onto the route afresh, so
         # the grace comes back with it.
         self.travelled_m = 0.0
+        self.off_route_s = 0.0
         self._previous_position = None
 
     # -- the same questions the hand-built driver answers ------------------
@@ -204,7 +219,10 @@ class PolicyDriver:
     def is_lost(self, state: VehicleState) -> bool:
         if self.travelled_m < self.lost_grace_m:
             return False
-        return self.deviation_m(state) > self.max_deviation_m
+        return (
+            self.off_route_s >= self.lost_persistence_s
+            and self.deviation_m(state) > self.max_deviation_m
+        )
 
     def is_finished(self, state: VehicleState) -> bool:
         if self._next_stop() is not None:

@@ -85,8 +85,11 @@ def main() -> int:
                                        "its route AND the speed you drove it at")
     parser.add_argument("--crash-damage", type=float, default=100.0,
                         help="damage above which a run is treated as a crash")
-    parser.add_argument("--max-deviation", type=float, default=8.0,
-                        help="abandon the run once this far off the route")
+    parser.add_argument("--max-deviation", type=float, default=None,
+                        help="how far off the route is too far (default: 8 m on "
+                             "a synthetic route, 30 m following a recorded one)")
+    parser.add_argument("--off-route-seconds", type=float, default=4.0,
+                        help="how long it may stay off the route before giving up")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--mcp", action="store_true",
                         help="drive through BeamNG's built-in MCP server instead "
@@ -293,16 +296,24 @@ def main() -> int:
             return manoeuvre_route.to_path(origin=(x, y), heading_rad=heading)
         return straight_route_from((x, y), heading, args.route_length)
 
+    # A recorded route is a spatial path to follow, not a line to hug: driving
+    # it in a different style takes a different line through a corner, and
+    # teleporting the car over that is far more disruptive than the excursion.
+    max_deviation = args.max_deviation
+    if max_deviation is None:
+        max_deviation = 30.0 if demonstration is not None else 8.0
+
     if policy is not None:
         driver = PolicyDriver(
             policy, spec, route, dt=dt, speed_limit_mps=args.speed_limit,
-            seed=args.seed, stops=stops, max_deviation_m=args.max_deviation,
+            seed=args.seed, stops=stops, max_deviation_m=max_deviation,
             demonstration=demonstration,
+            lost_persistence_s=args.off_route_seconds,
         )
     else:
         driver = Driver(
             spec, route, dt=dt, speed_limit_mps=args.speed_limit, seed=args.seed,
-            max_deviation_m=args.max_deviation,
+            max_deviation_m=max_deviation,
             wheelbase_m=limits.wheelbase_m,
             max_steer_rad=limits.max_steer_rad,
             max_accel_mps2=limits.max_accel_mps2,
@@ -341,17 +352,29 @@ def main() -> int:
                 control = driver.step(state)
                 backend.apply_control(control)
 
+                if driver.is_finished(state):
+                    # Without this the run sat at the end of a completed route
+                    # for the rest of its time budget, padding the log with
+                    # parked minutes and inflating the idle fraction -- which is
+                    # one of the channels the corrosion figure is computed from.
+                    print(f"\n  route completed at t={elapsed:.1f}s")
+                    break
+
                 crashed = getattr(backend, "has_crashed", lambda: False)()
                 lost = driver.is_lost(state)
                 if crashed or lost:
                     why = (
                         f"crashed (damage {getattr(backend, 'damage_since_start', 0.0):.0f})"
                         if crashed else
-                        f"{driver.deviation_m(state):.1f} m off the route"
+                        f"{driver.deviation_m(state):.1f} m off the route "
+                        f"for {getattr(driver, 'off_route_s', 0.0):.0f}s"
                     )
                     if recoveries >= args.recoveries or not hasattr(backend, "recover"):
                         print(f"\n  STOPPING at t={elapsed:.1f}s: {why}. "
                               f"Releasing controls.")
+                        if not crashed:
+                            print(f"  (--max-deviation {max_deviation:.0f} was the "
+                                  f"limit; raise it if the route is fine)")
                         break
                     recoveries += 1
                     print(f"\n  {why} at t={elapsed:.1f}s -- repairing and "

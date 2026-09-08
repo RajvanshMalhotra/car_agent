@@ -100,7 +100,10 @@ def test_it_knows_when_it_has_lost_the_route():
     driver, backend = a_driver()
     while driver.travelled_m < driver.lost_grace_m + 20.0:
         backend.apply_control(driver.step(backend.read_state()))
-    backend.state.y_m = 40.0
+    # Held off the route, not a momentary excursion.
+    for _ in range(int((driver.lost_persistence_s + 1.0) / DT)):
+        backend.state.y_m = 40.0
+        driver.step(backend.read_state())
     assert driver.is_lost(backend.read_state())
 
 
@@ -218,10 +221,11 @@ def test_the_grace_distance_is_configurable():
     backend.reset()
     driver = PolicyDriver(
         TRAINED, a_behaviour_spec(), straight(), dt=DT, speed_limit_mps=15.0,
-        lost_grace_m=0.0,
+        lost_grace_m=0.0, lost_persistence_s=0.0,
     )
     driver.step(backend.read_state())
     backend.state.y_m = 40.0
+    driver.step(backend.read_state())
     assert driver.is_lost(backend.read_state())
 
 
@@ -255,3 +259,95 @@ def test_it_keeps_driving_after_rejoining_mid_route():
         backend.apply_control(driver.step(backend.read_state()))
     assert backend.read_state().speed_mps > 2.0
     assert backend.read_state().x_m > 930.0
+
+
+# -- how off-route is off-route -------------------------------------------
+
+
+def test_a_brief_excursion_is_not_treated_as_lost():
+    # Driving the same route in a different style takes a different line
+    # through a corner. A moment wide of the recorded path is normal, not a
+    # reason to teleport the car and start again.
+    driver, backend = a_driver()
+    while driver.travelled_m < driver.lost_grace_m + 20.0:
+        backend.apply_control(driver.step(backend.read_state()))
+    for _ in range(int(1.0 / DT)):
+        backend.state.y_m = 30.0
+        driver.step(backend.read_state())
+    assert not driver.is_lost(backend.read_state())
+
+
+def test_being_off_route_for_long_enough_is_lost():
+    driver, backend = a_driver()
+    while driver.travelled_m < driver.lost_grace_m + 20.0:
+        backend.apply_control(driver.step(backend.read_state()))
+    for _ in range(int(10.0 / DT)):
+        backend.state.y_m = 60.0
+        driver.step(backend.read_state())
+    assert driver.is_lost(backend.read_state())
+
+
+def test_coming_back_to_the_route_clears_it():
+    driver, backend = a_driver()
+    while driver.travelled_m < driver.lost_grace_m + 20.0:
+        backend.apply_control(driver.step(backend.read_state()))
+    for _ in range(int(2.0 / DT)):
+        backend.state.y_m = 30.0
+        driver.step(backend.read_state())
+    backend.state.y_m = 0.5
+    for _ in range(int(1.0 / DT)):
+        backend.apply_control(driver.step(backend.read_state()))
+    assert not driver.is_lost(backend.read_state())
+
+
+def test_how_long_it_tolerates_being_off_route_is_configurable():
+    from control.policy_driver import PolicyDriver
+
+    backend = FakeBackend(dt=DT)
+    backend.reset()
+    driver = PolicyDriver(
+        TRAINED, a_behaviour_spec(), straight(), dt=DT, speed_limit_mps=15.0,
+        lost_grace_m=0.0, lost_persistence_s=0.0,
+    )
+    driver.step(backend.read_state())
+    backend.state.y_m = 60.0
+    driver.step(backend.read_state())
+    assert driver.is_lost(backend.read_state())
+
+
+def test_the_run_ends_when_there_is_no_route_left_to_drive():
+    # It deliberately stops a little short of the end, so requiring it to reach
+    # the last metre left it parked there for the rest of the run -- inflating
+    # the idle fraction, which is a channel the dataset depends on.
+    driver, backend = a_driver(path=straight(200.0))
+    finished_at = None
+    for step in range(int(200 / DT)):
+        backend.apply_control(driver.step(backend.read_state()))
+        if driver.is_finished(backend.read_state()):
+            finished_at = step * DT
+            break
+    assert finished_at is not None
+    assert backend.read_state().speed_mps < 0.5
+
+
+def test_it_is_not_finished_while_still_driving():
+    driver, backend = a_driver(path=straight(1500.0))
+    for _ in range(int(30 / DT)):
+        backend.apply_control(driver.step(backend.read_state()))
+    assert not driver.is_finished(backend.read_state())
+
+
+def test_it_is_not_finished_while_waiting_at_a_stop():
+    from behaviour.route_spec import Stop
+    from control.policy_driver import PolicyDriver
+
+    backend = FakeBackend(dt=DT)
+    backend.reset()
+    driver = PolicyDriver(
+        TRAINED, a_behaviour_spec(), straight(), dt=DT, speed_limit_mps=15.0,
+        stops=[Stop(arc_length_m=100.0, duration_s=20.0)],
+    )
+    for _ in range(int(60 / DT)):
+        backend.apply_control(driver.step(backend.read_state()))
+        if driver.waiting_until_s is not None:
+            assert not driver.is_finished(backend.read_state())
