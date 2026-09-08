@@ -63,11 +63,16 @@ class EngineModel:
         cold_start: bool = True,
         idle_rpm: float = 800.0,
         warm_start_temp_c: float = 80.0,
+        operating_temp_c: float = OPERATING_TEMP_C,
     ) -> None:
         self.ambient_temp_c = ambient_temp_c
         self.cold_start = cold_start
         self.idle_rpm = idle_rpm
         self.warm_start_temp_c = warm_start_temp_c
+        # A thermostat setpoint, and vehicles differ by tens of degrees. The
+        # default is a guess that fits no particular car; sim/thermostat.py
+        # fits the real one from a run's own coolant trace.
+        self.operating_temp_c = operating_temp_c
         self.state = EngineState(
             coolant_temp_c=ambient_temp_c,
             underbonnet_temp_c=ambient_temp_c,
@@ -125,7 +130,7 @@ class EngineModel:
             # Load shortens the warm-up: more fuel burnt, more heat rejected.
             load = 0.25 + 0.75 * min(1.0, throttle)
             tau = WARMUP_TAU_S / load
-            state.coolant_temp_c += (OPERATING_TEMP_C - state.coolant_temp_c) * (
+            state.coolant_temp_c += (self.operating_temp_c - state.coolant_temp_c) * (
                 dt / tau
             )
         else:

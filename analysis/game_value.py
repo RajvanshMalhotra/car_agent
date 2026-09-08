@@ -31,8 +31,10 @@ from sim.engine import (
     BAY_COUPLING_STATIC,
     BAY_LOAD_GAIN,
     BAY_TAU_S,
+    OPERATING_TEMP_C,
     EngineModel,
 )
+from sim.thermostat import fit_operating_temp_c
 
 #: Below this the two answers agree closely enough that the measurement is not
 #: buying anything the model could not have guessed.
@@ -62,6 +64,11 @@ class Comparison:
     measured: Side
     modelled: Side
     seconds: float
+    #: The steady-state temperature the model was given. Fitted from this
+    #: vehicle's own coolant trace when calibrating, otherwise the one-size
+    #: default that fits no particular car.
+    operating_temp_c: float = OPERATING_TEMP_C
+    calibrated: bool = False
 
     @property
     def ratio(self) -> float:
@@ -126,11 +133,28 @@ def _side(label, samples, coolants, ambient_c, dt_s) -> Side:
 
 
 def compare_thermal_sources(
-    samples: Sequence[Sample], ambient_c: float, cold_start: bool = True
+    samples: Sequence[Sample],
+    ambient_c: float,
+    cold_start: bool = True,
+    calibrate: bool = False,
 ) -> Comparison:
-    """Corrosion from the measured coolant, against corrosion from a modelled one."""
+    """Corrosion from the measured coolant, against corrosion from a modelled one.
+
+    With `calibrate`, the model is first given this vehicle's own steady-state
+    temperature, fitted from the measured trace. Without it the model uses one
+    hardcoded constant for every car, so the comparison largely measures how
+    wrong that constant happens to be here -- which is why the answer changed
+    from vehicle to vehicle.
+
+    Calibrating hands over exactly one number: the setpoint. The model is still
+    driven only by speed and throttle, so the test stays a real one.
+    """
     if not samples:
         raise ValueError("no rows in the run")
+
+    operating_temp_c = OPERATING_TEMP_C
+    if calibrate:
+        operating_temp_c = fit_operating_temp_c([s.coolant_c for s in samples])
 
     dt_s = (
         (samples[-1].t_s - samples[0].t_s) / max(1, len(samples) - 1)
@@ -140,7 +164,8 @@ def compare_thermal_sources(
 
     # The model never sees the measurement: it is driven only by the speed and
     # throttle the car actually used, which is the whole point of the test.
-    engine = EngineModel(ambient_temp_c=ambient_c, cold_start=cold_start)
+    engine = EngineModel(ambient_temp_c=ambient_c, cold_start=cold_start,
+                         operating_temp_c=operating_temp_c)
     engine.start()
     modelled_coolants = []
     for sample in samples:
@@ -153,4 +178,6 @@ def compare_thermal_sources(
         modelled=_side("predicted by our engine model",
                        samples, modelled_coolants, ambient_c, dt_s),
         seconds=samples[-1].t_s - samples[0].t_s,
+        operating_temp_c=operating_temp_c,
+        calibrated=calibrate,
     )

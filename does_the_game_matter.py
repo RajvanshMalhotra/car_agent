@@ -34,6 +34,10 @@ def main() -> int:
     parser.add_argument("csv", help="a run from runs/")
     parser.add_argument("--ambient", type=float, default=None,
                         help="ambient temperature; read from the sidecar if omitted")
+    parser.add_argument("--uncalibrated", action="store_true",
+                        help="use one hardcoded operating temperature for "
+                             "every vehicle, as this script originally did. "
+                             "The answer then depends on which car was driven")
     args = parser.parse_args()
 
     csv_path = FilePath(args.csv)
@@ -55,7 +59,8 @@ def main() -> int:
     samples = read_run(csv_path)
     try:
         result = compare_thermal_sources(samples, ambient_c=ambient,
-                                         cold_start=cold_start)
+                                         cold_start=cold_start,
+                                         calibrate=not args.uncalibrated)
     except ValueError as error:
         print(f"  {error}", file=sys.stderr)
         return 1
@@ -63,6 +68,12 @@ def main() -> int:
     print("=" * 70)
     print(f"  {csv_path.name}")
     print(f"  {len(samples)} rows, {result.seconds:.0f}s, ambient {ambient:.0f} C")
+    if result.calibrated:
+        print(f"  operating temperature fitted to this vehicle: "
+              f"{result.operating_temp_c:.1f} C")
+    else:
+        print(f"  operating temperature assumed for every vehicle: "
+              f"{result.operating_temp_c:.1f} C  (--uncalibrated)")
     print("=" * 70)
     print(f"\n  {'':32}{'coolant':>10}{'bay mean':>11}{'bay max':>10}{'eq.hours':>11}")
     for side in (result.measured, result.modelled):
@@ -83,6 +94,12 @@ def main() -> int:
         print("  throttle alone. The measured coolant is not buying anything, and")
         print("  driving patterns could be sampled instead of simulated.")
     print("=" * 70)
+
+    if not result.calibrated:
+        print("\n  This verdict is not comparable across vehicles. The model was")
+        print("  given one operating temperature for every car, so most of the gap")
+        print("  above is how wrong that guess is for this one. Drop")
+        print("  --uncalibrated to fit the temperature to the vehicle first.")
     print("\n  Not tested here: how much idling a real road network with traffic")
     print("  produces. That is emergent, has no counterfactual, and is the")
     print("  strongest remaining argument for using the simulator at all.")

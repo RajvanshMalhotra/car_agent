@@ -35,6 +35,7 @@ from control.ai_driver import (  # noqa: E402
     DRIVE_TO_ARGUMENTS, aggression_for, request_route,
 )
 from control.health import HealthMonitor  # noqa: E402
+from control.interventions import Interventions  # noqa: E402
 from control.journey import arrived, going_nowhere, remaining_m  # noqa: E402
 from control.places import (  # noqa: E402
     level_from_status, load_place, place_names,
@@ -207,9 +208,9 @@ def collect(backend, spec, args, log_path, refuge, destination, seconds,
     log_every = 1.0 / LOG_HZ
     started = time.monotonic()
     next_log = 0.0
-    repairs = 0
     started_m: float | None = None
     warned = False
+    tally = Interventions()
 
     log = RunLog(log_path, spec=spec, scenario=f"roam-{args.mode}",
                  seed=args.seed, log_hz=LOG_HZ)
@@ -257,7 +258,9 @@ def collect(backend, spec, args, log_path, refuge, destination, seconds,
                 # every tick forever.
                 action = health.recommended_action(can_relocate=refuge is not None)
                 if action:
-                    repairs += 1
+                    # Recorded as what it actually was. Going off the road is
+                    # not damage, and only a repair breaks the thermal record.
+                    tally.record(action)
                     put_right(backend, health, action, refuge, elapsed)
                     log.end_trip()
                     # Whatever it was doing, it has been moved or reset, so it
@@ -281,7 +284,7 @@ def collect(backend, spec, args, log_path, refuge, destination, seconds,
     except KeyboardInterrupt:
         print("\n  stopped")
 
-    report(log, repairs)
+    report(log, tally)
     return 0
 
 
@@ -304,7 +307,7 @@ def put_right(backend, health, action, refuge, elapsed) -> None:
     health.after_repair(backend.read_state())
 
 
-def report(log: RunLog, repairs: int) -> None:
+def report(log: RunLog, tally: Interventions) -> None:
     summary = log.summary()
     if not summary["rows"]:
         print("\n  No data. Was the car actually moving?")
@@ -319,8 +322,12 @@ def report(log: RunLog, repairs: int) -> None:
           f"({'drained' if summary['amp_hours_net'] > 0 else 'charged'})")
     print(f"  corrosion       {summary['equivalent_hours']:.3f} equivalent-hours "
           f"at {summary['equivalent_hours_reference_c']:.0f} C")
-    if repairs:
-        print(f"  repairs         {repairs}")
+    if tally.total:
+        print(f"  interventions   {tally.summary()}")
+    if tally.thermally_disturbed:
+        print(f"  NOTE: a repair resets damage mid-run, so drag and engine "
+              f"load step at that\n        moment and the corrosion figure "
+              f"integrates over it. Treat with care.")
     print(f"\n  Was the simulator worth it?")
     print(f"    python3 does_the_game_matter.py {log.csv_path}")
 
