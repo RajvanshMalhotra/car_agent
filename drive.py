@@ -36,7 +36,9 @@ from control.ai_driver import (  # noqa: E402
 )
 from control.health import HealthMonitor  # noqa: E402
 from control.journey import arrived, going_nowhere, remaining_m  # noqa: E402
-from control.places import load_place, place_names  # noqa: E402
+from control.places import (  # noqa: E402
+    level_from_status, load_place, place_names,
+)
 from datalog.writer import RunLog  # noqa: E402
 from sim.mcp_backend import MCPBackend  # noqa: E402
 from sim.mcp_client import DEFAULT_ENDPOINT, MCPError  # noqa: E402
@@ -66,6 +68,21 @@ def find_behaviour(needle: str) -> BehaviourSpec | None:
         if needle == spec.spec_hash or needle.lower() in spec.name.lower():
             return spec
     return None
+
+
+def wrong_map(place, level: str) -> tuple[bool, str]:
+    """Whether this place belongs to a different map than the one loaded.
+
+    `drive_to` snaps to the nearest navgraph node, so a place from another map
+    is not refused by the game -- it is accepted and the car is routed to some
+    arbitrary spot instead. Silently driving to the wrong place is worse than
+    stopping, so it is caught here rather than there.
+    """
+    if place.belongs_to(level):
+        return False, ""
+    return True, (f"'{place.name}' was saved on {place.level}, and "
+                  f"{level} is loaded. Save it again on this map:  "
+                  f"py windows_place.py {place.name}")
 
 
 def drive(spec: BehaviourSpec, args) -> int:
@@ -106,6 +123,17 @@ def drive(spec: BehaviourSpec, args) -> int:
     log_path = RUNS / f"{time.strftime('%Y%m%d-%H%M%S')}_{spec.spec_hash}.csv"
 
     try:
+        # Coordinates are meaningless across maps, and the game will not say
+        # so -- it routes to the nearest node instead.
+        here_level = backend.level()
+        for place in (destination, start, refuge):
+            if place is None:
+                continue
+            mismatch, why = wrong_map(place, here_level)
+            if mismatch:
+                print(f"\n  {why}", file=sys.stderr)
+                return 1
+
         if not backend.has_road_network():
             print("\n  This map has no roads, so the AI has nowhere to drive.",
                   file=sys.stderr)

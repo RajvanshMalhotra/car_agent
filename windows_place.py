@@ -22,7 +22,9 @@ from pathlib import Path as FilePath
 
 sys.path.insert(0, str(FilePath(__file__).parent))
 
-from control.places import load_place, place_names, save_place  # noqa: E402
+from control.places import (  # noqa: E402
+    level_from_status, load_place, place_names, save_place,
+)
 from sim.mcp_client import DEFAULT_ENDPOINT, MCPClient, MCPError  # noqa: E402
 
 PLACES_DIR = FilePath(__file__).parent / "places"
@@ -43,7 +45,8 @@ def main() -> int:
             return 1
         for name in names:
             place = load_place(PLACES_DIR, name)
-            print(f"  {name:20} ({place.x_m:9.1f}, {place.y_m:9.1f}, {place.z_m:7.1f})")
+            print(f"  {name:20} ({place.x_m:9.1f}, {place.y_m:9.1f}, "
+                  f"{place.z_m:7.1f})  {place.level or 'map not recorded'}")
         return 0
 
     client = MCPClient(args.endpoint)
@@ -62,13 +65,18 @@ def main() -> int:
         print("No position reported. Is a vehicle spawned?", file=sys.stderr)
         return 1
 
+    # Coordinates mean nothing on another map, so the map is saved with them.
+    level = level_from_status(status)
     place = save_place(
         PLACES_DIR, args.name,
         float(position["x"]), float(position["y"]), float(position.get("z", 0.0)),
+        level=level,
     )
-    print(f"Saved '{place.name}' at ({place.x_m:.1f}, {place.y_m:.1f}, {place.z_m:.1f})")
-    print(f"\nUse it with:")
-    print(f'  py windows_drive.py "Aggressive" --mcp --roam --relocate-to {place.name}')
+    where = f" on {place.level}" if place.level else ""
+    print(f"Saved '{place.name}'{where} at "
+          f"({place.x_m:.1f}, {place.y_m:.1f}, {place.z_m:.1f})")
+    print(f"\nDrive there with:")
+    print(f'  py drive.py "Delhi Courier" --to {place.name}')
     return 0
 
 

@@ -28,6 +28,7 @@ import math
 import time
 from typing import Any
 
+from control.places import level_from_status
 from sim.backend import ControlInput, SimBackend, VehicleState
 from battery.electrical import ElectricalModel
 from sim.engine import EngineModel
@@ -268,6 +269,17 @@ class MCPBackend(SimBackend):
             "drive_to",
             {"id": self.vehicle_id, "pos": {"x": x, "y": y, "z": height}, **settings},
         )
+
+    def level(self) -> str:
+        """Which map is loaded, or "" if this build's status does not say.
+
+        Used to catch a saved place from a different map, whose coordinates
+        mean nothing here.
+        """
+        try:
+            return level_from_status(self.client.call("get_status"))
+        except Exception:
+            return ""
 
     def has_road_network(self) -> bool:
         """Whether this level has a navgraph for the AI to drive on.
