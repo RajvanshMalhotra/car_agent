@@ -1,9 +1,14 @@
 #!/usr/bin/env python3
 """Let BeamNG's AI drive, and record what happens to the battery.
 
-    py drive.py "Delhi Courier"                 15 minutes of free driving
-    py drive.py "Delhi Courier" --minutes 60    an hour
-    py drive.py --list                          what styles are available
+    py drive.py "Delhi Courier" --to depot        drive to a place you picked
+    py drive.py "Aggressive"    --to depot        the same journey, driven harder
+    py drive.py "Delhi Courier"                   or just roam for 15 minutes
+    py drive.py --list                            what styles are available
+
+Pick places by driving to them once and saving them:
+
+    py windows_place.py depot
 
 That is the whole tool. Open a map with roads, spawn a car on one, run this.
 The game's own AI does the driving -- it follows roads and avoids traffic,
@@ -28,6 +33,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from behaviour.spec import BehaviourSpec  # noqa: E402
 from control.ai_driver import aggression_for  # noqa: E402
 from control.health import HealthMonitor  # noqa: E402
+from control.journey import arrived, remaining_m  # noqa: E402
 from control.places import load_place, place_names  # noqa: E402
 from datalog.writer import RunLog  # noqa: E402
 from sim.mcp_backend import MCPBackend  # noqa: E402
@@ -62,13 +68,23 @@ def find_behaviour(needle: str) -> BehaviourSpec | None:
 
 def drive(spec: BehaviourSpec, args) -> int:
     """Connect, hand the car to the AI, log until the time is up, hand it back."""
-    refuge = load_place(PLACES, args.refuge) if args.refuge else None
-    if args.refuge and refuge is None:
-        print(f"No place called {args.refuge!r}. Known: "
-              f"{', '.join(place_names(PLACES)) or 'none'}", file=sys.stderr)
-        print("Drive somewhere easy, then:  py windows_place.py <name>",
-              file=sys.stderr)
-        return 1
+    # Every place is resolved before anything is opened or started.
+    places = {}
+    for label, name in (("refuge", args.refuge), ("to", args.to),
+                        ("from", getattr(args, "start", None))):
+        if not name:
+            continue
+        place = load_place(PLACES, name)
+        if place is None:
+            print(f"No place called {name!r}. Known: "
+                  f"{', '.join(place_names(PLACES)) or 'none'}", file=sys.stderr)
+            print("Drive somewhere and save it:  py windows_place.py <name>",
+                  file=sys.stderr)
+            return 1
+        places[label] = place
+    refuge = places.get("refuge")
+    destination = places.get("to")
+    start = places.get("from")
 
     try:
         backend = MCPBackend(
@@ -96,8 +112,14 @@ def drive(spec: BehaviourSpec, args) -> int:
             return 1
 
         print(f"  behaviour : {spec.name}  [{spec.spec_hash}]")
-        print(f"  driving   : BeamNG's AI, aggression {aggression:.2f}, "
-              f"avoiding traffic")
+        if destination is not None:
+            here = backend.read_state()
+            print(f"  driving   : BeamNG's AI to '{destination.name}', "
+                  f"{remaining_m(here.x_m, here.y_m, destination):.0f} m away, "
+                  f"aggression {aggression:.2f}")
+        else:
+            print(f"  driving   : BeamNG's AI roaming ({args.mode}), "
+                  f"aggression {aggression:.2f}, avoiding traffic")
         print(f"  conditions: {spec.ambient_temp_c:.0f} C ambient, "
               f"climate control {spec.hvac_setting:.0%}")
         if refuge:
@@ -105,14 +127,34 @@ def drive(spec: BehaviourSpec, args) -> int:
         print(f"  log       : {log_path}")
         print(f"  running   : {args.minutes:.0f} minutes. Ctrl+C to stop early.\n")
 
-        backend.set_ai(mode=args.mode, aggression=aggression, avoidCars=True)
-        return collect(backend, spec, args, log_path, refuge, seconds)
+        if start is not None:
+            print(f"  moving to the start, '{start.name}'...")
+            backend.teleport_to(start.x_m, start.y_m, start.z_m)
+
+        send_off(backend, args, aggression, destination)
+        return collect(backend, spec, args, log_path, refuge, destination, seconds)
     finally:
         # Whatever happened, the game gets its car back.
         hand_back(backend)
 
 
-def collect(backend, spec, args, log_path, refuge, seconds) -> int:
+def send_off(backend, args, aggression, destination) -> None:
+    """Point the AI at the destination, or let it roam if there is not one.
+
+    `drive_to` is issued once and left alone: re-sending it makes the AI throw
+    away the route it has planned and start again.
+    """
+    if destination is None:
+        backend.set_ai(mode=args.mode, aggression=aggression, avoidCars=True)
+        return
+    backend.set_ai(mode="manual", aggression=aggression, avoidCars=True)
+    backend.drive_to(
+        x=destination.x_m, y=destination.y_m, z=destination.z_m,
+        aggression=aggression, avoidCars=True, driveInLane=True,
+    )
+
+
+def collect(backend, spec, args, log_path, refuge, destination, seconds) -> int:
     health = HealthMonitor(
         repair_above=args.repair_above,
         stuck_after_s=args.stuck_after,
@@ -138,23 +180,31 @@ def collect(backend, spec, args, log_path, refuge, seconds) -> int:
                 state = backend.read_state()
                 health.update(state)
 
+                if destination is not None and arrived(state.x_m, state.y_m,
+                                                       destination):
+                    print(f"\n  arrived at '{destination.name}' after "
+                          f"{elapsed / 60:.1f} min")
+                    log.record(state, None)
+                    break
+
                 if health.beyond_help:
                     print(f"\n  stopping at {elapsed / 60:.1f} min: recovered "
                           f"{health.futile_repairs} times and it still will not "
                           f"move.")
                     break
 
-                action = health.recommended_action()
+                # There is nowhere to send it if no refuge was saved, and
+                # recommending a move that cannot happen returns an action on
+                # every tick forever.
+                action = health.recommended_action(can_relocate=refuge is not None)
                 if action:
                     repairs += 1
                     put_right(backend, health, action, refuge, elapsed)
                     log.end_trip()
-                    backend.set_ai(mode=args.mode,
-                                   aggression=aggression_for(spec),
-                                   avoidCars=True)
-                    continue
-
-                if elapsed >= next_log:
+                    # Whatever it was doing, it has been moved or reset, so it
+                    # needs sending on its way again.
+                    send_off(backend, args, aggression_for(spec), destination)
+                elif elapsed >= next_log:
                     next_log += log_every
                     log.record(state, None)
                     if log.rows % 60 == 0:
@@ -184,7 +234,7 @@ def put_right(backend, health, action, refuge, elapsed) -> None:
         health.after_relocation(backend.read_state())
         return
 
-    if action == "recover" or action == "relocate":
+    if action in ("recover", "relocate"):
         print(f"\n  stuck at {elapsed / 60:.1f} min -- back on the road")
         backend.recover()
     else:
@@ -237,11 +287,20 @@ def main(argv=None) -> int:
                         help="a style: part of its name, or its hash")
     parser.add_argument("--list", action="store_true", help="show the styles")
     parser.add_argument("--minutes", type=float, default=15.0)
+    parser.add_argument("--to", help="drive to a place saved with "
+                                     "windows_place.py, instead of roaming")
+    parser.add_argument("--from", dest="start",
+                        help="teleport here before setting off, so the same "
+                             "journey can be driven in different styles")
     parser.add_argument("--mode", default="span", choices=("span", "random"),
                         help="'span' covers the map, 'random' wanders")
     parser.add_argument("--refuge", help="a place saved with windows_place.py, "
                                          "to move to if it keeps crashing")
-    parser.add_argument("--repair-above", type=float, default=150.0)
+    parser.add_argument("--repair-above", type=float, default=2500.0,
+                        help="damageSum to repair at. BeamNG counts bent "
+                             "panels, so cosmetic scrapes reach the hundreds; "
+                             "the default only stops for damage bad enough to "
+                             "change how the car drives")
     parser.add_argument("--stuck-after", type=float, default=45.0)
     parser.add_argument("--crashes-before-moving", type=int, default=3)
     parser.add_argument("--seed", type=int, default=0)

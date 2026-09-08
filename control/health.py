@@ -20,9 +20,15 @@ from __future__ import annotations
 from sim.backend import VehicleState
 
 #: Damage above which the car is repaired. BeamNG's damageSum is unitless and
-#: grows with severity: a kerb strike registers in the tens, a real impact in
-#: the hundreds.
-DEFAULT_REPAIR_ABOVE = 150.0
+#: counts every bent panel, so it rises steadily from scrapes that change
+#: nothing: a kerb strike registers in the tens, a scraped wing in the low
+#: hundreds, a structural impact in the thousands.
+#:
+#: Only the last of those is worth stopping for. A dented car drives the same
+#: -- same engine load, same thermals, same data -- and repairing it costs a
+#: trip boundary and a discontinuity in the log for no gain. The threshold is
+#: set where damage starts to change how the car actually drives.
+DEFAULT_REPAIR_ABOVE = 2500.0
 
 #: Below this the car counts as stationary.
 STOPPED_SPEED_MPS = 0.5
@@ -58,6 +64,10 @@ class HealthMonitor:
         self.crashes_per_window = crashes_per_window
         self.crash_window_s = crash_window_s
         self.crash_times: list[float] = []
+        #: Whether the crash currently being suffered has already been counted.
+        #: Damage is persistent, so without this one impact is recorded on
+        #: every tick until it is repaired -- and every repair recorded another.
+        self._crash_counted = False
         self._now_s = 0.0
         #: Repairs after which the car still did not move.
         self.futile_repairs = 0
@@ -76,6 +86,16 @@ class HealthMonitor:
             self._baseline_damage = state.damage
         self.damage_taken = max(0.0, state.damage - self._baseline_damage)
 
+        # One impact, one crash. The car stays damaged until it is repaired,
+        # so counting per tick -- or per repair -- turned a single accident
+        # into a pile-up and sent the run relocating in circles.
+        if self.damage_taken > self.repair_above:
+            if not self._crash_counted:
+                self.crash_times.append(state.sim_time_s)
+                self._crash_counted = True
+        else:
+            self._crash_counted = False
+
         if state.speed_mps >= STOPPED_SPEED_MPS:
             self.stationary_since_s = None
             self.stationary_for_s = 0.0
@@ -89,14 +109,13 @@ class HealthMonitor:
     def after_repair(self, state: VehicleState) -> None:
         """Re-baseline. A repair sets damage back to zero, and the car that
         comes out of it is a different car as far as this run is concerned."""
-        if self.damage_taken > 0.0:
-            self.crash_times.append(state.sim_time_s)
         self._now_s = state.sim_time_s
         if not self._moved_since_repair:
             self.futile_repairs += 1
         self._moved_since_repair = False
         self._baseline_damage = state.damage
         self.damage_taken = 0.0
+        self._crash_counted = False
         self.stationary_since_s = None
         self.stationary_for_s = 0.0
 
@@ -132,15 +151,19 @@ class HealthMonitor:
         """Repeated recoveries have not got the car moving again."""
         return self.futile_repairs >= self.give_up_after
 
-    def recommended_action(self) -> str | None:
-        """`"recover"`, `"repair"`, or None.
+    def recommended_action(self, can_relocate: bool = True) -> str | None:
+        """`"relocate"`, `"recover"`, `"repair"`, or None.
 
         Repeated crashes come first, then stuck -- a wedged car repaired in
         place is still wedged -- then plain damage.
+
+        `can_relocate` is False when no refuge has been saved. Recommending a
+        move that the caller cannot make returns an action on every tick and
+        nothing ever changes, which is a busy loop rather than a recovery.
         """
         # Moving it outranks patching it up: somewhere it keeps crashing, a
         # repair on the spot only buys another crash.
-        if self.in_trouble:
+        if can_relocate and self.in_trouble:
             return "relocate"
         if self.is_stuck:
             return "recover"

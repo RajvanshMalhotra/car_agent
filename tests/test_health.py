@@ -187,7 +187,9 @@ def test_a_healthy_run_is_never_beyond_help():
 # -- a neighbourhood the car cannot cope with ------------------------------
 
 
-def prang(monitor, t, damage=400.0):
+def prang(monitor, t, damage=4000.0):
+    """A crash bad enough to matter -- above the default repair threshold,
+    which counts bent panels and so sits in the thousands, not the hundreds."""
     monitor.update(a_state(damage=damage, speed=8.0, t=t))
     monitor.after_repair(a_state(damage=0.0, speed=8.0, t=t))
 
@@ -244,3 +246,76 @@ def test_relocating_outranks_a_plain_repair():
         prang(monitor, t)
     monitor.update(a_state(damage=900.0, speed=8.0, t=45.0))
     assert monitor.recommended_action() == "relocate"
+
+
+# -- the loop that hung a real run ----------------------------------------
+
+
+def test_repairing_is_not_itself_recorded_as_a_crash():
+    # Repairs used to append a crash time, so three repairs of ONE incident
+    # looked like three crashes, which triggered "relocate", which repaired
+    # again, which recorded another crash. That is the loop.
+    monitor = a_monitor(repair_above=100.0, crashes_per_window=3,
+                        crash_window_s=180.0)
+    monitor.update(a_state(damage=500.0, speed=8.0, t=10.0))
+    for repair in range(5):
+        monitor.after_repair(a_state(damage=0.0, speed=8.0, t=11.0 + repair))
+        monitor.update(a_state(damage=0.0, speed=8.0, t=11.5 + repair))
+    assert monitor.recent_crashes == 1
+    assert not monitor.in_trouble
+
+
+def test_separate_crashes_are_still_counted_separately():
+    monitor = a_monitor(repair_above=100.0, crashes_per_window=3,
+                        crash_window_s=180.0)
+    for t in (10.0, 40.0, 70.0):
+        monitor.update(a_state(damage=500.0, speed=8.0, t=t))
+        monitor.after_repair(a_state(damage=0.0, speed=8.0, t=t + 1))
+    assert monitor.recent_crashes == 3
+    assert monitor.in_trouble
+
+
+def test_a_single_long_crash_counts_once():
+    monitor = a_monitor(repair_above=100.0, crashes_per_window=2,
+                        crash_window_s=180.0)
+    for t in range(10, 40):
+        monitor.update(a_state(damage=500.0, speed=0.0, t=float(t)))
+    assert monitor.recent_crashes == 1
+
+
+def test_nowhere_to_go_means_no_relocation_is_recommended():
+    # With no refuge configured there is nowhere better to send it, and
+    # recommending a move that cannot happen produced an action every tick.
+    monitor = a_monitor(repair_above=100.0, crashes_per_window=2,
+                        crash_window_s=180.0)
+    for t in (10.0, 40.0):
+        monitor.update(a_state(damage=500.0, speed=8.0, t=t))
+        monitor.after_repair(a_state(damage=0.0, speed=8.0, t=t + 1))
+    monitor.update(a_state(damage=0.0, speed=8.0, t=45.0))
+    assert monitor.recommended_action(can_relocate=False) is None
+
+
+def test_a_refuge_still_gets_a_relocation():
+    monitor = a_monitor(repair_above=100.0, crashes_per_window=2,
+                        crash_window_s=180.0)
+    for t in (10.0, 40.0):
+        monitor.update(a_state(damage=500.0, speed=8.0, t=t))
+        monitor.after_repair(a_state(damage=0.0, speed=8.0, t=t + 1))
+    monitor.update(a_state(damage=0.0, speed=8.0, t=45.0))
+    assert monitor.recommended_action(can_relocate=True) == "relocate"
+
+
+def test_a_stuck_car_is_still_recovered_with_nowhere_to_relocate_to():
+    monitor = a_monitor(stuck_after_s=10.0)
+    for second in range(1, 20):
+        monitor.update(a_state(speed=0.0, t=float(second)))
+    assert monitor.recommended_action(can_relocate=False) == "recover"
+
+
+def test_cosmetic_damage_does_not_warrant_a_repair():
+    # BeamNG's damageSum counts every bent panel. A scraped wing changes
+    # nothing about engine load or thermals; stopping to repair it interrupts
+    # the run for no gain.
+    monitor = a_monitor()
+    monitor.update(a_state(damage=200.0, speed=8.0, t=10.0))
+    assert not monitor.needs_repair
