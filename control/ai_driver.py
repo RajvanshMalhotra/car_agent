@@ -69,6 +69,41 @@ def _refused(result: Any) -> bool:
     return "fail" in text or "error" in text or "unknown" in text
 
 
+def request_route(
+    backend: Any,
+    x: float,
+    y: float,
+    z: float | None = None,
+    accepted: tuple[str, ...] | None = None,
+    **settings: Any,
+) -> tuple[str, ...]:
+    """Ask the game's AI to drive to a point, and confirm that it agreed.
+
+    Returns the argument shape the game accepted, so the caller can pass it
+    back and skip the probing next time. Raises if nothing is accepted --
+    the alternative is a silent refusal, which looks from outside exactly
+    like a car that will not move.
+    """
+    available = {
+        "aggression": settings.get("aggression", 0.6),
+        "avoidCars": settings.get("avoidCars", True),
+        "driveInLane": settings.get("driveInLane", True),
+        "routeSpeed": settings.get("routeSpeed", 0.0),
+        "routeSpeedMode": settings.get("routeSpeedMode", "limit"),
+    }
+    candidates = (accepted,) if accepted is not None else DRIVE_TO_ARGUMENTS
+    for names in candidates:
+        result = backend.drive_to(
+            x=x, y=y, z=z, **{name: available[name] for name in names}
+        )
+        if not _refused(result):
+            return names
+    raise RuntimeError(
+        "BeamNG would not accept any form of drive_to. Run "
+        "windows_ai_probe.py to see what it says."
+    )
+
+
 def aggression_for(spec: BehaviourSpec) -> float:
     """Collapse a behaviour into the one number the game's AI takes.
 

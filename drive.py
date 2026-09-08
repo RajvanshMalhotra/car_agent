@@ -31,9 +31,11 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 
 from behaviour.spec import BehaviourSpec  # noqa: E402
-from control.ai_driver import aggression_for  # noqa: E402
+from control.ai_driver import (  # noqa: E402
+    DRIVE_TO_ARGUMENTS, aggression_for, request_route,
+)
 from control.health import HealthMonitor  # noqa: E402
-from control.journey import arrived, remaining_m  # noqa: E402
+from control.journey import arrived, going_nowhere, remaining_m  # noqa: E402
 from control.places import load_place, place_names  # noqa: E402
 from datalog.writer import RunLog  # noqa: E402
 from sim.mcp_backend import MCPBackend  # noqa: E402
@@ -131,30 +133,43 @@ def drive(spec: BehaviourSpec, args) -> int:
             print(f"  moving to the start, '{start.name}'...")
             backend.teleport_to(start.x_m, start.y_m, start.z_m)
 
-        send_off(backend, args, aggression, destination)
-        return collect(backend, spec, args, log_path, refuge, destination, seconds)
+        accepted = send_off(backend, args, aggression, destination)
+        return collect(backend, spec, args, log_path, refuge, destination,
+                       seconds, accepted)
     finally:
         # Whatever happened, the game gets its car back.
         hand_back(backend)
 
 
-def send_off(backend, args, aggression, destination) -> None:
+def send_off(backend, args, aggression, destination, accepted=None):
     """Point the AI at the destination, or let it roam if there is not one.
 
     `drive_to` is issued once and left alone: re-sending it makes the AI throw
     away the route it has planned and start again.
+
+    Returns the argument shape the game accepted, to be passed back next time.
+    A refused `drive_to` does not raise in BeamNG -- it comes back as text and
+    the car simply never sets off -- so `request_route` drops arguments until
+    one is taken, and raises if none is.
     """
     if destination is None:
         backend.set_ai(mode=args.mode, aggression=aggression, avoidCars=True)
-        return
+        return None
     backend.set_ai(mode="manual", aggression=aggression, avoidCars=True)
-    backend.drive_to(
-        x=destination.x_m, y=destination.y_m, z=destination.z_m,
-        aggression=aggression, avoidCars=True, driveInLane=True,
+    shape = request_route(
+        backend, destination.x_m, destination.y_m, destination.z_m,
+        accepted=accepted, aggression=aggression,
+        avoidCars=True, driveInLane=True,
     )
+    if accepted is None and shape != DRIVE_TO_ARGUMENTS[0]:
+        dropped = sorted(set(DRIVE_TO_ARGUMENTS[0]) - set(shape))
+        print(f"  note: the game would not take {', '.join(dropped)} on "
+              f"drive_to; driving without them")
+    return shape
 
 
-def collect(backend, spec, args, log_path, refuge, destination, seconds) -> int:
+def collect(backend, spec, args, log_path, refuge, destination, seconds,
+            accepted=None) -> int:
     health = HealthMonitor(
         repair_above=args.repair_above,
         stuck_after_s=args.stuck_after,
@@ -165,6 +180,8 @@ def collect(backend, spec, args, log_path, refuge, destination, seconds) -> int:
     started = time.monotonic()
     next_log = 0.0
     repairs = 0
+    started_m: float | None = None
+    warned = False
 
     log = RunLog(log_path, spec=spec, scenario=f"roam-{args.mode}",
                  seed=args.seed, log_hz=LOG_HZ)
@@ -179,6 +196,20 @@ def collect(backend, spec, args, log_path, refuge, destination, seconds) -> int:
 
                 state = backend.read_state()
                 health.update(state)
+
+                if destination is not None:
+                    gap_m = remaining_m(state.x_m, state.y_m, destination)
+                    if started_m is None:
+                        started_m = gap_m
+                    if going_nowhere(started_m, gap_m, elapsed, warned):
+                        warned = True
+                        print(f"\n  the car has not moved in "
+                              f"{elapsed:.0f}s. Usually one of:")
+                        print(f"    - '{destination.name}' is not near a road, "
+                              f"so the AI has nowhere to route to")
+                        print(f"    - the car is not on a road itself")
+                        print(f"    - it is in neutral, or the handbrake is on")
+                        print(f"  Check with:  py windows_ai_probe.py\n")
 
                 if destination is not None and arrived(state.x_m, state.y_m,
                                                        destination):
@@ -203,7 +234,8 @@ def collect(backend, spec, args, log_path, refuge, destination, seconds) -> int:
                     log.end_trip()
                     # Whatever it was doing, it has been moved or reset, so it
                     # needs sending on its way again.
-                    send_off(backend, args, aggression_for(spec), destination)
+                    accepted = send_off(backend, args, aggression_for(spec),
+                                        destination, accepted)
                 elif elapsed >= next_log:
                     next_log += log_every
                     log.record(state, None)
