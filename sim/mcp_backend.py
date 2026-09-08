@@ -238,6 +238,32 @@ class MCPBackend(SimBackend):
         self._baseline_damage = self._damage
         return snapshot
 
+    # -- handing the wheel to the game's own AI ---------------------------
+
+    def set_ai(self, **settings: Any) -> Any:
+        """Configure the game's own driver: mode, aggression, avoidCars."""
+        return self.client.call("set_ai", {"id": self.vehicle_id, **settings})
+
+    def drive_to(self, x: float, y: float, z: float | None = None, **settings: Any) -> Any:
+        """Send the game's AI to a point, snapped to the nearest road node."""
+        height = self.state.z_m if z is None else z
+        return self.client.call(
+            "drive_to",
+            {"id": self.vehicle_id, "pos": {"x": x, "y": y, "z": height}, **settings},
+        )
+
+    def has_road_network(self) -> bool:
+        """Whether this level has a navgraph for the AI to drive on.
+
+        `smallgrid` and other empty levels have none, and the AI cannot move a
+        car on them at all -- worth saying before a run rather than after.
+        """
+        try:
+            result = self.client.call("get_navgraph", {})
+        except Exception:
+            return False
+        return isinstance(result, dict) and result.get("nodeCount", 0) > 0
+
     def teleport_to(self, x: float, y: float, z: float | None = None) -> VehicleState:
         """Put the vehicle at a point, repaired.
 

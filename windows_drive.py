@@ -39,6 +39,7 @@ from control.alignment import measure_heading, straight_route_from  # noqa: E402
 from control.calibration import (  # noqa: E402
     CalibrationError, VehicleLimits, calibrate, load_limits, save_limits,
 )
+from control.ai_driver import AIDriver, aggression_for  # noqa: E402
 from control.demonstration import load_demonstration  # noqa: E402
 from control.route import load_route  # noqa: E402
 from control.policy import DrivingPolicy  # noqa: E402
@@ -101,6 +102,10 @@ def main() -> int:
     parser.add_argument("--tune", action="store_true",
                         help="learn controller gains for the measured vehicle "
                              "(trains against the fake backend, seconds not days)")
+    parser.add_argument("--beamng-ai", action="store_true",
+                        help="let BeamNG's own AI drive: it follows roads and "
+                             "avoids traffic, which nothing here can. Needs a "
+                             "real map -- an empty level has no road network.")
     parser.add_argument("--policy", nargs="?", const="policies/default.json",
                         default=None,
                         help="drive with a learned policy (default "
@@ -208,7 +213,9 @@ def main() -> int:
     vehicle = vehicle or "unknown"
 
     limits = load_limits(LIMITS_DIR, vehicle)
-    if policy is not None:
+    if policy is not None or args.beamng_ai:
+        # Neither needs the vehicle measured: the policy was trained across
+        # vehicles, and with --beamng-ai the game is driving its own car.
         limits = limits or VehicleLimits(vehicle, 3.0, 8.0, 2.7)
     elif args.calibrate or limits is None:
         print(f"  calibrating '{vehicle}' (about 20 s of driving)...")
@@ -303,7 +310,22 @@ def main() -> int:
     if max_deviation is None:
         max_deviation = 30.0 if demonstration is not None else 8.0
 
-    if policy is not None:
+    if args.beamng_ai:
+        if not getattr(backend, "has_road_network", lambda: True)():
+            print("\n  This level has no road network, so BeamNG's AI has "
+                  "nowhere to drive.", file=sys.stderr)
+            print("  Load a real map (list_levels shows them) and try again.",
+                  file=sys.stderr)
+            backend.close()
+            return 1
+        driver = AIDriver(
+            backend, spec, route, dt=dt, speed_limit_mps=args.speed_limit,
+            demonstration=demonstration,
+        )
+        driver.start()
+        print(f"  driver : BeamNG's own AI, aggression "
+              f"{driver.aggression:.2f} (from '{spec.name}')")
+    elif policy is not None:
         driver = PolicyDriver(
             policy, spec, route, dt=dt, speed_limit_mps=args.speed_limit,
             seed=args.seed, stops=stops, max_deviation_m=max_deviation,
@@ -350,7 +372,10 @@ def main() -> int:
 
                 state = backend.read_state()
                 control = driver.step(state)
-                backend.apply_control(control)
+                if control is not None:
+                    # The AI driver returns nothing: BeamNG is working the
+                    # controls, and sending pedal commands would fight it.
+                    backend.apply_control(control)
 
                 if driver.is_finished(state):
                     # Without this the run sat at the end of a completed route
@@ -417,6 +442,9 @@ def main() -> int:
     except KeyboardInterrupt:
         print("\ninterrupted")
     finally:
+        # Hand the car back before letting go of it, or the AI keeps driving.
+        if hasattr(driver, "stop"):
+            driver.stop()
         backend.apply_control(ControlInput(0.0, 0.0, 0.0))
         backend.close()
 

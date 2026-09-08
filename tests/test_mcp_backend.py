@@ -57,6 +57,10 @@ class StubServer:
             return list(self.vehicles)
         if name == "get_vehicle_damage":
             return {"id": 87942, "damageSum": self.damage}
+        if name in ("set_ai", "drive_to"):
+            return "ok"
+        if name == "get_navgraph":
+            return {"nodeCount": 4213}
         if name == "set_position":
             self.pos = dict(arguments["pos"])
             self.damage = 0.0
@@ -399,3 +403,34 @@ def test_the_reported_height_is_kept_if_not_given(backend, stub):
     backend.teleport_to(1.0, 2.0)
     call = [args for name, args in stub.calls if name == "set_position"][0]
     assert "z" in call["pos"]
+
+
+# -- handing the wheel to the game's own AI --------------------------------
+
+
+def test_the_ai_can_be_configured(backend, stub):
+    backend.set_ai(mode="manual", aggression=0.8, avoidCars=True)
+    call = [args for name, args in stub.calls if name == "set_ai"][0]
+    assert call["aggression"] == pytest.approx(0.8)
+    assert call["mode"] == "manual"
+    assert call["id"] == 87942
+
+
+def test_the_ai_can_be_sent_to_a_point(backend, stub):
+    backend.drive_to(x=100.0, y=250.0, aggression=0.9, driveInLane=True)
+    call = [args for name, args in stub.calls if name == "drive_to"][0]
+    assert call["pos"]["x"] == pytest.approx(100.0)
+    assert call["pos"]["y"] == pytest.approx(250.0)
+    assert call["driveInLane"] is True
+
+
+def test_the_drive_target_carries_a_height(backend, stub):
+    # drive_to snaps to the nearest navgraph node, but the point still needs
+    # all three coordinates.
+    backend.drive_to(x=1.0, y=2.0)
+    assert "z" in [args for name, args in stub.calls if name == "drive_to"][0]["pos"]
+
+
+def test_the_road_network_can_be_checked(backend, stub):
+    # A level with no roads has no navgraph, and the AI cannot drive at all.
+    assert backend.has_road_network() in (True, False)

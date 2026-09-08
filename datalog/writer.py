@@ -95,7 +95,13 @@ class RunLog:
         """Mark a key-off. Trip segmentation is what sulfation is defined over."""
         self.trip += 1
 
-    def record(self, state: VehicleState, control: ControlInput) -> None:
+    def record(self, state: VehicleState, control: ControlInput | None) -> None:
+        """Record one row.
+
+        `control` is None when the game's own AI is driving: there is no
+        commanded value from us to record, and inventing zeros would read as
+        "we asked for no throttle" rather than "we did not ask".
+        """
         idling = state.engine_on and state.speed_mps < IDLE_SPEED_MPS
         self._writer.writerow(
             [
@@ -117,9 +123,9 @@ class RunLog:
                 round(state.damage, 2),
                 round(state.throttle, 4),
                 round(state.brake, 4),
-                round(control.throttle, 4),
-                round(control.brake, 4),
-                round(control.steering, 4),
+                "" if control is None else round(control.throttle, 4),
+                "" if control is None else round(control.brake, 4),
+                "" if control is None else round(control.steering, 4),
             ]
         )
         self._handle.flush()

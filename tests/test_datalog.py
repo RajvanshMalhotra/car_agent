@@ -306,3 +306,22 @@ def test_closing_twice_is_safe(tmp_path):
     log.close()
     log.close()
     assert sidecar(tmp_path)["summary"]["rows"] == 1
+
+
+def test_a_row_can_be_recorded_with_no_control_of_our_own(tmp_path):
+    # When BeamNG's AI drives there are no commanded values from us. The actual
+    # pedals still arrive from the game, and those are what engine load follows.
+    with open_log(tmp_path) as log:
+        log.record(a_state(throttle=0.7, brake=0.1), None)
+    row = rows(tmp_path)[0]
+    assert float(row["throttle"]) == 0.7
+    assert float(row["brake"]) == 0.1
+    assert row["throttle_cmd"] == ""
+    assert row["steering_cmd"] == ""
+
+
+def test_a_run_driven_by_the_game_still_summarises(tmp_path):
+    with open_log(tmp_path) as log:
+        for _ in range(10):
+            log.record(a_state(speed_mps=12.0), None)
+    assert sidecar(tmp_path)["summary"]["rows"] == 10
