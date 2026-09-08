@@ -434,3 +434,22 @@ def test_the_drive_target_carries_a_height(backend, stub):
 def test_the_road_network_can_be_checked(backend, stub):
     # A level with no roads has no navgraph, and the AI cannot drive at all.
     assert backend.has_road_network() in (True, False)
+
+
+def test_the_vehicle_can_be_repaired_where_it_stands(backend, stub):
+    backend.repair()
+    assert any(name == "reset_vehicle" for name, _ in stub.calls)
+
+
+def test_repairing_does_not_count_as_a_crash(backend, stub):
+    backend.reset()
+    stub.damage = 900.0
+    backend.read_state()
+    backend.repair()
+    assert not backend.has_crashed()
+
+
+def test_repairing_releases_the_controls_first(backend, stub):
+    backend.apply_control(ControlInput(1.0, 0.0, 0.5))
+    backend.repair()
+    assert stub.inputs["throttle"] == pytest.approx(0.0)

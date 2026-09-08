@@ -42,6 +42,8 @@ from control.calibration import (  # noqa: E402
 from control.ai_driver import AIDriver, aggression_for  # noqa: E402
 from control.roam_driver import RoamDriver  # noqa: E402
 from control.demonstration import load_demonstration  # noqa: E402
+from control.health import HealthMonitor  # noqa: E402
+from control.places import load_place, place_names  # noqa: E402
 from control.route import load_route  # noqa: E402
 from control.policy import DrivingPolicy  # noqa: E402
 from control.policy_driver import PolicyDriver  # noqa: E402
@@ -54,6 +56,7 @@ CACHE_DIR = FilePath(__file__).parent / "behaviour" / "cache"
 LOG_DIR = FilePath(__file__).parent / "runs"
 LIMITS_DIR = FilePath(__file__).parent / "vehicles"
 DEMO_DIR = FilePath(__file__).parent / "demonstrations"
+PLACES_DIR = FilePath(__file__).parent / "places"
 ROUTE_SPEC_DIR = FilePath(__file__).parent / "behaviour" / "routes"
 
 
@@ -117,6 +120,24 @@ def main() -> int:
                         default=None,
                         help="drive with a learned policy (default "
                              "policies/default.json). Needs no calibration.")
+    parser.add_argument("--repair-above", type=float, default=150.0,
+                        help="repair the car once it has taken this much damage; "
+                             "a pranged car drives differently and quietly "
+                             "corrupts the rest of the run")
+    parser.add_argument("--relocate-to",
+                        help="a spot saved with windows_place.py. When the car "
+                             "keeps crashing in one place it is moved here "
+                             "instead of being patched up on the spot.")
+    parser.add_argument("--crashes-per-window", type=int, default=3,
+                        help="crashes close together before the car is moved")
+    parser.add_argument("--crash-window", type=float, default=180.0,
+                        help="seconds over which those crashes are counted")
+    parser.add_argument("--give-up-after", type=int, default=3,
+                        help="stop the run after this many recoveries that do "
+                             "not get the car moving again")
+    parser.add_argument("--stuck-after", type=float, default=45.0,
+                        help="seconds stationary before the car counts as stuck "
+                             "and is recovered to the road")
     parser.add_argument("--recoveries", type=int, default=5,
                         help="how many times to repair and carry on after a "
                              "crash or losing the route")
@@ -369,6 +390,27 @@ def main() -> int:
         print(f"route     : {route.length_m:.0f} m, limit {args.speed_limit} m/s")
     print("Ctrl+C to stop. Controls are released on exit.\n")
 
+    refuge = None
+    if args.relocate_to:
+        refuge = load_place(PLACES_DIR, args.relocate_to)
+        if refuge is None:
+            print(f"no saved place called {args.relocate_to!r}. "
+                  f"Known: {', '.join(place_names(PLACES_DIR)) or 'none'}",
+                  file=sys.stderr)
+            print("Drive somewhere easy and run:  py windows_place.py <name>",
+                  file=sys.stderr)
+            backend.close()
+            return 1
+        print(f"  refuge : '{refuge.name}' at ({refuge.x_m:.0f}, {refuge.y_m:.0f}) "
+              f"-- the car goes here if it keeps crashing")
+
+    health = HealthMonitor(repair_above=args.repair_above,
+                           stuck_after_s=args.stuck_after,
+                           give_up_after=args.give_up_after,
+                           crashes_per_window=args.crashes_per_window,
+                           crash_window_s=args.crash_window)
+    repairs = 0
+    relocations = 0
     started = time.monotonic()
     recoveries = 0
     next_log = 0.0
@@ -395,6 +437,49 @@ def main() -> int:
                     # The AI driver returns nothing: BeamNG is working the
                     # controls, and sending pedal commands would fight it.
                     backend.apply_control(control)
+
+                # A damaged or wedged car is put right without ending the run:
+                # unattended runs are the point of roaming, and a run that stops
+                # at the first kerb strike collects nothing.
+                health.update(state)
+                action = health.recommended_action()
+                if health.beyond_help:
+                    print(f"\n  STOPPING at t={elapsed:.1f}s: {health.futile_repairs} "
+                          f"recoveries in a row and the car still will not move. "
+                          f"It is somewhere it cannot be rescued from.")
+                    break
+
+                # Without a refuge there is nowhere better to send it, so a
+                # troubled car is simply patched up where it is.
+                if action == "relocate" and (refuge is None
+                                             or not hasattr(backend, "teleport_to")):
+                    action = "repair"
+
+                if action and hasattr(backend, "repair"):
+                    repairs += 1
+                    detail = (f"{health.recent_crashes} crashes in "
+                              f"{args.crash_window:.0f}s" if action == "relocate"
+                              else f"damage {health.damage_taken:.0f}, stationary "
+                                   f"{health.stationary_for_s:.0f}s")
+                    print(f"\n  {action} at t={elapsed:.1f}s ({detail})"
+                          f" -- run continues")
+                    if action == "relocate":
+                        print(f"      moving to '{refuge.name}' -- it cannot cope "
+                              f"where it is")
+                        backend.teleport_to(refuge.x_m, refuge.y_m, refuge.z_m)
+                        relocations += 1
+                        health.after_relocation(backend.read_state())
+                    elif action == "recover":
+                        backend.recover()
+                        health.after_repair(backend.read_state())
+                    else:
+                        backend.repair()
+                        health.after_repair(backend.read_state())
+                    if hasattr(driver, "restart"):
+                        driver.restart(route)
+                    # A repair is a discontinuity, not something to smooth over.
+                    log.end_trip()
+                    continue
 
                 if driver.is_finished(state):
                     # Without this the run sat at the end of a completed route
@@ -473,6 +558,11 @@ def main() -> int:
         print(f"  metadata         -> {log.sidecar_path}")
         if recoveries:
             print(f"  recoveries       {recoveries}")
+        if repairs:
+            print(f"  repairs          {repairs} "
+                  f"(each starts a new trip in the log)")
+        if relocations:
+            print(f"  relocations      {relocations} to '{refuge.name}'")
         print(f"  idle fraction    {summary['idle_fraction']:.2f} "
               f"(behaviour asked for {spec.idle_fraction:.2f})")
         print(f"  bay temperature  mean {summary['mean_underbonnet_c']:.1f} C  "

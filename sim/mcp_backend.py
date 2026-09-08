@@ -288,6 +288,21 @@ class MCPBackend(SimBackend):
         self._baseline_damage = self._damage
         return snapshot
 
+    def repair(self) -> VehicleState:
+        """Repair the vehicle where it stands, without moving it.
+
+        BeamNG's damage is persistent: a pranged car keeps driving with bent
+        suspension, so its engine load and thermals shift and the rest of the
+        run measures a different car. Repairing in place keeps its position,
+        which matters when it is partway along a route.
+        """
+        for event in ("throttle", "brake", "steering"):
+            self._inject(event, 0.0, force=True)
+        self.client.call("reset_vehicle", {"id": self.vehicle_id})
+        snapshot = self.read_state()
+        self._baseline_damage = self._damage
+        return snapshot
+
     def recover(self) -> VehicleState:
         """Repair the vehicle and put it back on the nearest road.
 
