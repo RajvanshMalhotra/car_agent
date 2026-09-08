@@ -59,6 +59,14 @@ class VehicleState:
     engine_on: bool = False
     crank_count: int = 0
 
+    #: Battery current (positive is discharge) and terminal voltage. Neither
+    #: is measurable in the game -- there is no 12 V system -- so both are
+    #: computed by `battery.electrical` from RPM and accessory state. They are
+    #: here because they are the two channels the real dataset has, and without
+    #: them simulated and measured runs are not in the same space.
+    current_a: float = 0.0
+    voltage_v: float = 12.7
+
     #: Cumulative damage as the simulator reports it. Unitless and monotonic;
     #: a kerb strike registers in the tens, a real impact in the hundreds.
     damage: float = 0.0

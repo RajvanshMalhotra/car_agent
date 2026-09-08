@@ -216,6 +216,9 @@ def main() -> int:
             ambient_temp_c=spec.ambient_temp_c,
             cold_start=spec.cold_start,
             crash_damage=args.crash_damage,
+            # The behaviour's accessory state drives the electrical load, which
+            # is what makes the recharge-deficit pathway measurable at all.
+            hvac_setting=spec.hvac_setting,
             # A recorded drive is in world coordinates; everything else starts
             # wherever the car happens to be.
             rebase_origin=demonstration is None,

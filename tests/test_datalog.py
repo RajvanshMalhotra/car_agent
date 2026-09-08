@@ -325,3 +325,33 @@ def test_a_run_driven_by_the_game_still_summarises(tmp_path):
         for _ in range(10):
             log.record(a_state(speed_mps=12.0), None)
     assert sidecar(tmp_path)["summary"]["rows"] == 10
+
+
+# -- the two channels the real dataset has --------------------------------
+
+
+def test_current_and_voltage_are_recorded(tmp_path):
+    # The measured dataset's usable columns are current and voltage. Without
+    # these the simulated runs are not in the same space as it, and nothing
+    # downstream can fuse the two.
+    with open_log(tmp_path) as log:
+        log.record(a_state(current_a=-45.0, voltage_v=14.1), None)
+    row = rows(tmp_path)[0]
+    assert float(row["current_a"]) == -45.0
+    assert float(row["voltage_v"]) == 14.1
+
+
+def test_the_summary_reports_the_charge_balance(tmp_path):
+    # Negative amp-hours means the battery ended the run fuller than it began.
+    with open_log(tmp_path) as log:
+        for _ in range(3600):
+            log.record(a_state(current_a=-10.0), None)
+    assert sidecar(tmp_path)["summary"]["amp_hours_net"] == pytest.approx(-10.0, rel=0.02)
+
+
+def test_a_run_that_drains_the_battery_shows_a_positive_balance(tmp_path):
+    # The recharge-deficit pathway, visible in one number.
+    with open_log(tmp_path) as log:
+        for _ in range(3600):
+            log.record(a_state(current_a=6.0), None)
+    assert sidecar(tmp_path)["summary"]["amp_hours_net"] > 0.0

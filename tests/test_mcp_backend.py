@@ -453,3 +453,35 @@ def test_repairing_releases_the_controls_first(backend, stub):
     backend.apply_control(ControlInput(1.0, 0.0, 0.5))
     backend.repair()
     assert stub.inputs["throttle"] == pytest.approx(0.0)
+
+
+# -- current and voltage, computed from what the game does report ----------
+
+
+def test_a_running_engine_produces_a_charging_current(backend, stub):
+    stub.electrics["rpm"] = 2500.0
+    backend.read_state()
+    assert backend.read_state().current_a < 0.0
+
+
+def test_an_idling_engine_with_the_climate_on_can_discharge(stub):
+    instance = MCPBackend(client=stub, ambient_temp_c=40.0, hvac_setting=1.0,
+                          alternator_rated_a=85.0)
+    try:
+        stub.electrics["rpm"] = 700.0
+        instance.read_state()
+        assert instance.read_state().current_a > 0.0
+    finally:
+        instance.close()
+
+
+def test_the_voltage_is_reported_too(backend, stub):
+    stub.electrics["rpm"] = 2500.0
+    backend.read_state()
+    assert 12.0 < backend.read_state().voltage_v < 15.0
+
+
+def test_a_stopped_engine_draws_from_the_battery(backend, stub):
+    stub.electrics["rpm"] = 0.0
+    backend.read_state()
+    assert backend.read_state().current_a > 0.0

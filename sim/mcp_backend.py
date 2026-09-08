@@ -29,6 +29,7 @@ import time
 from typing import Any
 
 from sim.backend import ControlInput, SimBackend, VehicleState
+from battery.electrical import ElectricalModel
 from sim.engine import EngineModel
 
 #: Damage above this counts as a crash. BeamNG's damageSum is unitless and
@@ -95,6 +96,9 @@ class MCPBackend(SimBackend):
         cold_start: bool = True,
         crash_damage: float = DEFAULT_CRASH_DAMAGE,
         rebase_origin: bool = True,
+        hvac_setting: float = 0.0,
+        lights: bool = False,
+        alternator_rated_a: float = 120.0,
     ) -> None:
         if client is None:
             from sim.mcp_client import DEFAULT_ENDPOINT, MCPClient
@@ -113,6 +117,13 @@ class MCPBackend(SimBackend):
 
         self.engine = EngineModel(ambient_temp_c, cold_start=cold_start)
         self.engine.start()
+        # There is no 12 V system in the game, so current and voltage are
+        # computed from RPM and the accessory state the behaviour asked for.
+        self.hvac_setting = hvac_setting
+        self.lights = lights
+        self.electrical = ElectricalModel(
+            alternator_rated_a=alternator_rated_a, temperature_c=ambient_temp_c
+        )
         self.state = VehicleState(
             coolant_temp_c=ambient_temp_c,
             underbonnet_temp_c=ambient_temp_c,
@@ -211,6 +222,12 @@ class MCPBackend(SimBackend):
         )
         state.coolant_temp_c = engine.coolant_temp_c
         state.underbonnet_temp_c = engine.underbonnet_temp_c
+        state.current_a, state.voltage_v = self.electrical.from_driving(
+            rpm=state.rpm,
+            engine_on=state.rpm > 1.0,
+            hvac=self.hvac_setting,
+            lights=self.lights,
+        )
         state.engine_on = True
         state.crank_count = self.engine.state.crank_count
         state.sim_time_s = now - self._start_wall

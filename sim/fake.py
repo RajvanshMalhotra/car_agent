@@ -10,6 +10,7 @@ import math
 import random
 
 from sim.backend import ControlInput, SimBackend, VehicleState
+from battery.electrical import ElectricalModel
 from sim.engine import EngineModel
 
 
@@ -44,6 +45,8 @@ class FakeBackend(SimBackend):
         self.ambient_temp_c = ambient_temp_c
         self.cold_start = cold_start
         self.engine = EngineModel(ambient_temp_c, cold_start=cold_start)
+        self.electrical = ElectricalModel(temperature_c=ambient_temp_c)
+        self.hvac_setting = 0.0
         self.state = self._fresh_state()
 
     def _fresh_state(self) -> VehicleState:
@@ -88,6 +91,9 @@ class FakeBackend(SimBackend):
         state.underbonnet_temp_c = engine.underbonnet_temp_c
         state.engine_on = engine.engine_on
         state.crank_count = engine.crank_count
+        state.current_a, state.voltage_v = self.electrical.from_driving(
+            rpm=state.rpm, engine_on=engine.engine_on, hvac=self.hvac_setting
+        )
 
     def read_state(self) -> VehicleState:
         return self.state.snapshot()

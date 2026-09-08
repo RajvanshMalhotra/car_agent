@@ -47,6 +47,9 @@ COLUMNS = [
     "crank_count",
     "idling",
     "damage",
+    # The two channels the measured dataset has.
+    "current_a",
+    "voltage_v",
     # actual pedals, then what the controller asked for
     "throttle",
     "brake",
@@ -77,6 +80,7 @@ class RunLog:
         self.idle_rows = 0
         self.bay_temps: list[float] = []
         self.max_damage = 0.0
+        self.amp_seconds = 0.0
 
         self.csv_path.parent.mkdir(parents=True, exist_ok=True)
         self._handle = self.csv_path.open("w", newline="")
@@ -121,6 +125,8 @@ class RunLog:
                 state.crank_count,
                 int(idling),
                 round(state.damage, 2),
+                round(state.current_a, 3),
+                round(state.voltage_v, 3),
                 round(state.throttle, 4),
                 round(state.brake, 4),
                 "" if control is None else round(control.throttle, 4),
@@ -134,6 +140,9 @@ class RunLog:
         self.idle_rows += int(idling)
         self.bay_temps.append(state.underbonnet_temp_c)
         self.max_damage = max(self.max_damage, state.damage)
+        # Charge balance over the run. Positive means the battery ended emptier
+        # than it started -- the recharge-deficit pathway, in one number.
+        self.amp_seconds += state.current_a / self.log_hz if self.log_hz else 0.0
 
     def summary(self) -> dict[str, Any]:
         return {
@@ -150,6 +159,7 @@ class RunLog:
             ),
             "equivalent_hours_reference_c": REFERENCE_TEMP_C,
             "max_damage": self.max_damage,
+            "amp_hours_net": self.amp_seconds / 3600.0,
         }
 
     def close(self) -> None:
