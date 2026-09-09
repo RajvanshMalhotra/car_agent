@@ -3,20 +3,24 @@
 
     py windows_lua_probe.py
 
-`run_lua_vehicle` runs code inside the vehicle's own physics VM, where the
-full state lives -- accelerometer, road grade, mass, engine torque, wheel
-speeds. `get_electrics` shows only a curated slice of it, and asynchronously
-at that.
+`get_electrics` returns a curated slice of vehicle state. `run_lua_vehicle`
+runs code inside the vehicle's own physics VM, where all of it lives --
+accelerometer, road grade, engine torque, per-wheel angular velocity.
 
-The names below are how BeamNG's vehicle Lua is *believed* to be shaped. They
-are undocumented and change between versions, so nothing here is assumed: each
-probe runs under `pcall` and reports whether it resolved. A logger built on a
-field name that silently reads `nil` looks exactly like a logger built on a
-field that is always zero, which is the failure mode this exists to prevent.
+**`run_lua_vehicle` is asynchronous.** It queues the code and answers with
+"queued in vehicle VM(s)"; the result arrives on a *later* call, keyed by
+vehicle id and with nothing saying which call it belongs to. Reading the reply
+as if it belonged to the request silently shifts every result by two probes,
+which is exactly what happened the first time this ran. So each probe now
+carries a tag, and the runner drains until that tag comes back.
 
-Writes `lua_probe.json`. Send that back.
+The GE VM (`run_lua`) is synchronous and needs none of this.
 
-Nothing here drives, moves or damages the car. Every probe reads.
+Field names here are undocumented and version-dependent, so nothing is
+assumed: every probe runs under `pcall` and reports whether it resolved.
+
+Writes `lua_probe.json`. Reads only, with one exception: `--set-temperature`
+sets ambient, reads it back, and restores the original value.
 """
 
 from __future__ import annotations
@@ -24,6 +28,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
@@ -51,8 +56,7 @@ local function enc(v, depth)
   elseif t == 'table' and depth > 0 then
     local parts = {}
     for k, vv in pairs(v) do
-      local ek = enc(vv, depth - 1)
-      if ek ~= nil then parts[#parts + 1] = q(k) .. ':' .. ek end
+      parts[#parts + 1] = q(k) .. ':' .. enc(vv, depth - 1)
     end
     return '{' .. table.concat(parts, ',') .. '}'
   end
@@ -63,133 +67,156 @@ local function try(fn)
   if not ok then return '{"ok":false,"error":' .. q(tostring(value)) .. '}' end
   return '{"ok":true,"value":' .. enc(value, 3) .. '}'
 end
+local function tagged(name, fn)
+  return '{"tag":' .. q(name) .. ',"result":' .. try(fn) .. '}'
+end
 """
 
-#: Each probe answers one row of the parameter table. Kept separate so one
-#: missing module does not take the rest of the dump with it.
+#: The last two unknowns, plus enough context to tell a wrong name from a
+#: missing feature. Each value is a Lua function body.
 PROBES: dict[str, str] = {
-    # Everything get_electrics curates, plus everything it does not.
-    "electrics_values": "return try(function() return electrics.values end)",
+    # m -- the one required row with no working accessor. `obj:getTotalMass()`
+    # came back nil, so these are the plausible alternatives.
+    "mass_node_sum": (
+        "local n = obj:getNodeCount() local total = 0 "
+        "for i = 0, n - 1 do total = total + obj:getNodeMass(i) end "
+        "return {nodeCount = n, totalMass = total}"
+    ),
+    "mass_physics": "return obj:getPhysicsMass()",
+    "mass_beamstate": "return {mass = beamstate.getTotalMass()}",
+    "mass_vdata": "return {weight = v.data.totalWeight}",
 
-    # a_x. The IMU, not a differentiated speed.
-    "sensors": "return try(function() return sensors end)",
-    "sensors_gxyz": (
-        "return try(function() "
-        "return {gx=sensors.gx, gy=sensors.gy, gz=sensors.gz, "
-        "gx2=sensors.gx2, gy2=sensors.gy2, gz2=sensors.gz2} end)"
-    ),
-
-    # m. Static, but needed for any force or power calculation.
-    "mass": "return try(function() return obj:getTotalMass() end)",
-
-    # theta. The z component of the forward vector is sin(pitch), i.e. grade.
-    "direction_vector": (
-        "return try(function() local d = obj:getDirectionVector() "
-        "return {x=d.x, y=d.y, z=d.z} end)"
-    ),
-    "direction_vector_up": (
-        "return try(function() local d = obj:getDirectionVectorUp() "
-        "return {x=d.x, y=d.y, z=d.z} end)"
-    ),
-    "velocity": (
-        "return try(function() local v = obj:getVelocity() "
-        "return {x=v.x, y=v.y, z=v.z} end)"
-    ),
-
-    # T. Engine torque, and whatever else the device carries.
-    "powertrain_devices": (
-        "return try(function() local names = {} "
-        "for name, _ in pairs(powertrain.getDevices()) do names[#names+1] = name end "
-        "return names end)"
-    ),
-    "main_engine": (
-        "return try(function() local e = powertrain.getDevice('mainEngine') "
-        "local out = {} "
-        "for k, v in pairs(e) do local t = type(v) "
-        "if t == 'number' or t == 'boolean' or t == 'string' then out[k] = v end end "
-        "return out end)"
-    ),
-
-    # omega. Per-wheel angular velocity.
-    "wheel_count": "return try(function() return wheels.wheelCount end)",
-    "wheel_0": (
-        "return try(function() local w = wheels.wheels[0] "
-        "local out = {} "
-        "for k, v in pairs(w) do local t = type(v) "
-        "if t == 'number' or t == 'boolean' or t == 'string' then out[k] = v end end "
-        "return out end)"
-    ),
-
-    # I_bat. Almost certainly absent -- confirm rather than assume.
-    "electrics_battery_keys": (
-        "return try(function() local hits = {} "
-        "for k, v in pairs(electrics.values) do "
-        "local low = string.lower(k) "
-        "if string.find(low, 'volt') or string.find(low, 'batt') "
-        "or string.find(low, 'amp') or string.find(low, 'current') "
-        "or string.find(low, 'alternator') or string.find(low, 'charge') "
-        "then hits[k] = v end end return hits end)"
-    ),
-
-    # What modules exist at all, so a failure above can be told apart from a
-    # module that is simply named something else in this build.
+    # The module list lost to the shift last time.
     "globals": (
-        "return try(function() local names = {} "
-        "for k, _ in pairs(_G) do names[#names+1] = k end "
-        "table.sort(names) return names end)"
+        "local names = {} for k, _ in pairs(_G) do names[#names + 1] = k end "
+        "table.sort(names) return names"
+    ),
+
+    # Whether the vehicle can see ambient at all, or only the GE side can.
+    "vehicle_ambient": (
+        "return {airflow = electrics.values.airflowspeed, "
+        "airspeed = electrics.values.airspeed, "
+        "altitude = electrics.values.altitude, "
+        "watertemp = electrics.values.watertemp, "
+        "oiltemp = electrics.values.oiltemp}"
     ),
 }
 
-#: Game-engine side, not vehicle side. Ambient temperature is the one axis the
-#: tool listing does not cover, and it is the dominant one for corrosion.
+#: Game-engine side. Synchronous, so no draining needed.
 GE_PROBES: dict[str, str] = {
-    "core_environment": (
-        "return try(function() local out = {} "
-        "for k, v in pairs(core_environment) do out[k] = type(v) end "
-        "return out end)"
+    "mass_from_ge": (
+        "return try(function() "
+        "return be:getPlayerVehicle(0):getTotalMass() end)"
     ),
-    "environment_state": (
-        "return try(function() return core_environment.getState() end)"
-    ),
-    "temperature_curve": (
-        "return try(function() return core_environment.getTemperatureK() end)"
+    "temperature_now": (
+        "return try(function() return {kelvin = core_environment.getTemperatureK(), "
+        "celsius = core_environment.getState().temperatureC} end)"
     ),
 }
 
+#: Ambient temperature is the dominant driver of grid corrosion, and until this
+#: dump nothing suggested the game exposed it at all. Whether it can be *set*
+#: decides whether an ambient sweep is simulation or arithmetic -- so it is
+#: worth one deliberate write. The original value is put back either way.
+SET_TEMPERATURE = r"""
+return try(function()
+  local before = core_environment.getState().temperatureC
+  local state = core_environment.getState()
+  state.temperatureC = 42
+  core_environment.setState(state)
+  local after = core_environment.getState().temperatureC
+  local kelvin = core_environment.getTemperatureK()
+  local restore = core_environment.getState()
+  restore.temperatureC = before
+  core_environment.setState(restore)
+  return {before = before, after = after, kelvinWhenHot = kelvin,
+          restored = core_environment.getState().temperatureC}
+end)
+"""
 
-def run(client: MCPClient, tool: str, body: str) -> dict:
-    """Run one probe and parse whatever comes back."""
-    code = SERIALISER + "\n" + body
+#: How long to keep draining before calling a probe lost. The queue turns over
+#: in a frame or two; this is generous.
+DRAIN_SECONDS = 5.0
+DRAIN_INTERVAL_S = 0.15
+
+
+def _payloads(raw) -> list[dict]:
+    """Pull whatever finished results a vehicle-VM reply carries.
+
+    A reply is either the "queued" notice (a string) or a map of vehicle id to
+    the JSON our Lua built.
+    """
+    if not isinstance(raw, dict):
+        return []
+    found = []
+    for value in raw.values():
+        if not isinstance(value, str):
+            continue
+        try:
+            found.append(json.loads(value))
+        except (json.JSONDecodeError, ValueError):
+            continue
+    return found
+
+
+def run_vehicle(client: MCPClient, name: str, body: str) -> dict:
+    """Issue a tagged probe and drain the queue until its tag comes back."""
+    code = f"{SERIALISER}\nreturn tagged({name!r}, function()\n{body}\nend)"
+    noop = f"{SERIALISER}\nreturn tagged('__drain__', function() return 0 end)"
+
+    seen: dict[str, dict] = {}
+
+    def absorb(raw) -> None:
+        for payload in _payloads(raw):
+            tag = payload.get("tag")
+            if tag and tag != "__drain__":
+                seen[tag] = payload.get("result", {})
+
     try:
-        raw = client.call(tool, {"code": code})
+        absorb(client.call("run_lua_vehicle", {"code": code}))
+        deadline = time.monotonic() + DRAIN_SECONDS
+        while name not in seen and time.monotonic() < deadline:
+            time.sleep(DRAIN_INTERVAL_S)
+            absorb(client.call("run_lua_vehicle", {"code": noop}))
+    except MCPError as error:
+        return {"ok": False, "error": f"MCP: {error}"}
+
+    if name not in seen:
+        return {"ok": False, "error": f"no result within {DRAIN_SECONDS:.0f}s"}
+    return seen[name]
+
+
+def run_ge(client: MCPClient, body: str) -> dict:
+    try:
+        raw = client.call("run_lua", {"code": SERIALISER + "\n" + body})
     except MCPError as error:
         return {"ok": False, "error": f"MCP: {error}"}
     if isinstance(raw, dict):
         return raw
-    text = str(raw).strip()
     try:
-        return json.loads(text)
+        return json.loads(str(raw).strip())
     except (json.JSONDecodeError, ValueError):
-        # run_lua_vehicle returns tostring() of the result, so a VM-level
-        # failure arrives as prose rather than JSON.
-        return {"ok": False, "error": f"unparseable: {text[:300]}"}
+        return {"ok": False, "error": f"unparseable: {str(raw)[:200]}"}
 
 
 def summarise(name: str, result: dict) -> str:
     if not result.get("ok"):
-        return f"  [ no ] {name:24} {str(result.get('error'))[:80]}"
+        return f"  [ no ] {name:20} {str(result.get('error'))[:76]}"
     value = result.get("value")
     if isinstance(value, dict):
-        return f"  [ yes] {name:24} {len(value)} keys"
+        shown = ", ".join(f"{k}={v}" for k, v in list(value.items())[:4])
+        return f"  [ yes] {name:20} {shown[:76]}"
     if isinstance(value, list):
-        return f"  [ yes] {name:24} {len(value)} entries"
-    return f"  [ yes] {name:24} {value}"
+        return f"  [ yes] {name:20} {len(value)} entries"
+    return f"  [ yes] {name:20} {value}"
 
 
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--endpoint", default=DEFAULT_ENDPOINT)
     parser.add_argument("--out", default="lua_probe.json")
+    parser.add_argument("--set-temperature", action="store_true",
+                        help="set ambient to 42 C, read it back, restore it")
     args = parser.parse_args(argv)
 
     print("=" * 70)
@@ -199,20 +226,28 @@ def main(argv=None) -> int:
     findings: dict[str, dict] = {}
     try:
         with MCPClient(args.endpoint) as client:
-            info = client.server_info or {}
-            print(f"  connected: {info.get('serverInfo', {}).get('name', '?')}\n")
+            info = (client.server_info or {}).get("serverInfo", {})
+            print(f"  connected: {info.get('name', '?')}\n")
 
-            print("VEHICLE VM  (run_lua_vehicle)")
+            print("VEHICLE VM  (run_lua_vehicle, drained)")
             for name, body in PROBES.items():
-                result = run(client, "run_lua_vehicle", body)
+                result = run_vehicle(client, name, body)
                 findings[name] = result
                 print(summarise(name, result))
 
             print("\nGAME ENGINE VM  (run_lua)")
             for name, body in GE_PROBES.items():
-                result = run(client, "run_lua", body)
+                result = run_ge(client, body)
                 findings[f"ge_{name}"] = result
                 print(summarise(f"ge_{name}", result))
+
+            if args.set_temperature:
+                print("\nAMBIENT TEMPERATURE  (writes, then restores)")
+                result = run_ge(client, SET_TEMPERATURE)
+                findings["ge_set_temperature"] = result
+                print(summarise("ge_set_temperature", result))
+            else:
+                print("\n  ambient write skipped. Add --set-temperature to test it.")
     except MCPError as error:
         print(f"\n  {error}", file=sys.stderr)
         print("  In BeamNG: Options > Advanced > 'Enable MCP server'.",
@@ -222,7 +257,6 @@ def main(argv=None) -> int:
     out = Path(args.out)
     out.write_text(json.dumps(findings, indent=2, sort_keys=True))
     print(f"\n  Written to {out.resolve()}")
-    print("  Send me that file.")
     return 0
 
 
