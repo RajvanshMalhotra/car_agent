@@ -133,6 +133,70 @@ def test_send_off_hands_the_destination_to_the_games_ai():
     assert drive_to["id"] == 7
 
 
+def test_send_off_releases_the_parking_brake_first():
+    # A spawned car can sit with it on, and the AI will not override it. That
+    # looks exactly like a refused drive_to from outside.
+    client = FakeClient()
+    drive_route.send_off(client, 7, {"x": 0.0, "y": 0.0, "z": 0.0},
+                         STYLES["economical"])
+    released = {args["event"]: args["value"]
+                for args in client.tools("inject_input")}
+    assert released["parkingbrake"] == 0.0
+    assert released["brake"] == 0.0
+
+
+def test_send_off_asks_for_everything_first():
+    client = FakeClient()
+    drive_route.send_off(client, 7, {"x": 0.0, "y": 0.0, "z": 0.0},
+                         STYLES["aggressive"])
+    assert set(client.tools("drive_to")[0]) == {
+        "id", "pos", "aggression", "avoidCars", "driveInLane", "routeSpeedMode"}
+
+
+def test_send_off_drops_arguments_until_the_game_takes_one():
+    # A refused drive_to does not raise. It comes back as text and the car
+    # never sets off.
+    def fussy(arguments):
+        if "routeSpeedMode" in arguments:
+            return "drive_to failed: unknown argument routeSpeedMode"
+        if "driveInLane" in arguments:
+            return "error: bad argument driveInLane"
+        return {}
+
+    client = FakeClient({"drive_to": fussy})
+    accepted = drive_route.send_off(client, 7, {"x": 0.0, "y": 0.0, "z": 0.0},
+                                    STYLES["aggressive"])
+    assert accepted == ("aggression", "avoidCars")
+    assert len(client.tools("drive_to")) == 3
+
+
+def test_send_off_raises_when_nothing_is_accepted_and_says_what_was_tried():
+    client = FakeClient({"drive_to": "drive_to failed: no navgraph"})
+    with pytest.raises(RuntimeError, match="would not accept"):
+        drive_route.send_off(client, 7, {"x": 0.0, "y": 0.0, "z": 0.0},
+                             STYLES["economical"])
+
+
+def test_send_off_reuses_a_shape_that_already_worked():
+    client = FakeClient()
+    drive_route.send_off(client, 7, {"x": 0.0, "y": 0.0, "z": 0.0},
+                         STYLES["economical"], accepted=("aggression",))
+    assert set(client.tools("drive_to")[0]) == {"id", "pos", "aggression"}
+
+
+@pytest.mark.parametrize("reply", [
+    "drive_to failed", "error: nil value", "unknown argument",
+    "invalid pos", "bad argument #2",
+])
+def test_a_refusal_is_recognised_however_it_is_worded(reply):
+    assert drive_route.refused(reply) is True
+
+
+@pytest.mark.parametrize("reply", [{}, "ok", "route set", 1, None])
+def test_an_acceptance_is_not_mistaken_for_a_refusal(reply):
+    assert drive_route.refused(reply) is False
+
+
 def test_send_off_puts_the_ai_in_manual_so_it_follows_the_route():
     client = FakeClient()
     drive_route.send_off(client, 7, {"x": 0.0, "y": 0.0, "z": 0.0},

@@ -98,12 +98,31 @@ enablePhysicsStepHook(true)
 -- empty CSV in fifteen minutes.
 local ok, first = pcall(capture)
 if not ok then
-  return jsonEncode({{ok = false, error = tostring(first)}})
+  S.ok = false
+  S.error = tostring(first)
+  return jsonEncode({{ok = false, error = S.error}})
 end
+S.ok = true
 S.seq = 1
 S.n = 1
 S.buf[1] = first
 return jsonEncode({{ok = true, mass = S.mass, wheels = S.wi, width = #first}})
+"""
+
+
+def verdict_source() -> str:
+    """Lua that reports the install self-test, from the sampler's own state.
+
+    Polling with anything that reports its *own* success answers the question
+    with the wrong call -- the mass comes back missing and a failed install
+    looks fine. The verdict has to come from where install left it.
+    """
+    return f"""
+local S = _G.{STATE_GLOBAL}
+if not S then return jsonEncode({{ok = false, error = 'the install never ran'}}) end
+if S.ok == nil then return jsonEncode({{pending = true}}) end
+return jsonEncode({{ok = S.ok, error = S.error, mass = S.mass,
+                    wheels = S.wi, capture_error = S.err}})
 """
 
 

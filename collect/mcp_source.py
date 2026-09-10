@@ -12,7 +12,9 @@ import time
 
 from collect.decode import DecodeError, decode, decode_install
 from collect.derive import add_derived
-from collect.lua import drain_source, install_source, uninstall_source
+from collect.lua import (
+    drain_source, install_source, uninstall_source, verdict_source,
+)
 from collect.source import TrajectorySource
 
 
@@ -46,7 +48,7 @@ class MCPTrajectorySource(TrajectorySource):
             if attempt and self.wait_s:
                 time.sleep(self.wait_s)
             try:
-                result = decode_install(self._call("return jsonEncode({ok=true})"))
+                result = decode_install(self._call(verdict_source()))
             except DecodeError as error:
                 raise RuntimeError(str(error)) from error
             if result:

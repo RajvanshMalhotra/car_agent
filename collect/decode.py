@@ -106,6 +106,8 @@ def decode_install(payload: object) -> dict:
         obj = _as_object(payload)
     except _Pending:
         return {}
+    if obj.get("pending"):
+        return {}
     if not obj.get("ok", False):
         raise DecodeError(
             f"the sampler could not read the vehicle: {obj.get('error', obj)}"

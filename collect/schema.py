@@ -109,6 +109,9 @@ MEASURED: tuple[Channel, ...] = (
     _m("trip_m", "m", "e.trip"),
     _m("altitude_m", "m", "e.altitude"),
     _m("ignition_level", "1", "e.ignitionLevel", "crank and trip detection"),
+    _m("parkingbrake", "1", "e.parkingbrake",
+       "a spawned car can have this on; the AI will not move if it is"),
+    _m("avg_wheel_av", "rad/s", "e.avgWheelAV"),
     _m("engine_running", "1", "e.engineRunning"),
     _m("damage", "1", "(beamstate and beamstate.damage) or 0"),
 )

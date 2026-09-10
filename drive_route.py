@@ -159,22 +159,77 @@ def find_destination(client) -> tuple[dict | None, dict]:
 # -- driving ----------------------------------------------------------------
 
 
-def send_off(client, vehicle_id: int, destination: dict, style: Style) -> None:
-    """Point the game's AI at the destination.
+#: What to ask `drive_to` for, richest first. BeamNG's argument names and enum
+#: values are undocumented, and **a refused call does not raise** -- it comes
+#: back as text and the car simply never sets off, which from outside looks
+#: exactly like a broken AI. So drop arguments until one is taken.
+DRIVE_TO_ARGUMENTS = (
+    ("aggression", "avoidCars", "driveInLane", "routeSpeedMode"),
+    ("aggression", "avoidCars", "driveInLane"),
+    ("aggression", "avoidCars"),
+    ("aggression",),
+    (),
+)
 
-    Issued once and left alone: re-sending `drive_to` makes the AI throw away
-    the route it has planned and start again.
+
+def refused(result) -> bool:
+    """BeamNG reports a bad call in the returned text rather than by raising."""
+    text = str(result).lower()
+    return any(word in text for word in ("fail", "error", "unknown", "invalid",
+                                         "bad argument", "nil value"))
+
+
+def free_the_car(client, vehicle_id: int) -> None:
+    """Release anything holding the car still.
+
+    A spawned vehicle can sit with its parking brake on, and the AI will not
+    override it. That is indistinguishable from a refused `drive_to`, so both
+    get ruled out rather than guessed between.
     """
+    for event, value in (("parkingbrake", 0.0), ("brake", 0.0),
+                         ("throttle", 0.0), ("clutch", 0.0)):
+        try:
+            client.call("inject_input",
+                        {"id": vehicle_id, "event": event, "value": value})
+        except MCPError:
+            pass
+
+
+def send_off(client, vehicle_id: int, destination: dict, style: Style,
+             accepted: tuple[str, ...] | None = None) -> tuple[str, ...]:
+    """Point the game's AI at the destination, and confirm that it agreed.
+
+    Returns the argument shape the game accepted, so a later call can pass it
+    back and skip the probing. Raises if nothing is accepted -- the alternative
+    is a silent refusal, which is what "the car doesn't move at all" looks like.
+
+    `drive_to` is issued once per leg and left alone: re-sending it makes the AI
+    throw away the route it has planned and start again.
+    """
+    free_the_car(client, vehicle_id)
     client.call("set_ai", {"id": vehicle_id, "mode": "manual",
                            "aggression": style.aggression, "avoidCars": True})
-    client.call("drive_to", {
-        "id": vehicle_id,
-        "pos": destination,
+
+    available = {
         "aggression": style.aggression,
         "avoidCars": True,
         "driveInLane": style.drive_in_lane,
         "routeSpeedMode": style.speed_mode,
-    })
+    }
+    attempts = []
+    for names in ((accepted,) if accepted is not None else DRIVE_TO_ARGUMENTS):
+        arguments = {"id": vehicle_id, "pos": destination}
+        arguments.update({name: available[name] for name in names})
+        result = client.call("drive_to", arguments)
+        if not refused(result):
+            return names
+        attempts.append((names, str(result)[:120]))
+
+    raise RuntimeError(
+        "BeamNG would not accept any form of drive_to:\n    "
+        + "\n    ".join(f"{list(names) or 'pos only'}: {why}"
+                         for names, why in attempts)
+    )
 
 
 def halt(client, vehicle_id: int) -> None:
@@ -209,7 +264,9 @@ class Journey:
     happens -- so the position it reasons about is never more than a second old.
     """
 
-    def __init__(self, client, vehicle_id, source, destination, style, seed=0):
+    def __init__(self, client, vehicle_id, source, destination, style, seed=0,
+                 accepted=None):
+        self.accepted = accepted
         self.client = client
         self.vehicle_id = vehicle_id
         self.source = source
@@ -250,7 +307,9 @@ class Journey:
             if elapsed >= self.stopped_until:
                 self.stopped_until = 0.0
                 release(self.client, self.vehicle_id)
-                send_off(self.client, self.vehicle_id, self.destination, self.style)
+                self.accepted = send_off(self.client, self.vehicle_id,
+                                         self.destination, self.style,
+                                         accepted=self.accepted)
                 self.next_stop_at = self._schedule(elapsed)
         elif self.next_stop_at is not None and elapsed >= self.next_stop_at:
             self.stops += 1
@@ -295,11 +354,15 @@ def main(argv=None) -> int:
                              "in it, so this is an assumption the log records")
     parser.add_argument("--show-route", action="store_true",
                         help="print what the game says your route is, and stop")
+    parser.add_argument("--diagnose", action="store_true",
+                        help="find out why the car will not move, and stop")
     parser.add_argument("--endpoint", default=DEFAULT_ENDPOINT)
     args = parser.parse_args(argv)
 
-    if not args.style and not args.show_route:
-        parser.error("pick a style, or pass --show-route")
+    if not args.style and not (args.show_route or args.diagnose):
+        parser.error("pick a style, or pass --show-route or --diagnose")
+    if args.diagnose and not args.style:
+        args.style = "economical"
 
     client = MCPClient(args.endpoint)
     try:
@@ -333,6 +396,9 @@ def main(argv=None) -> int:
     )
     csv_path = RUNS / f"{time.strftime('%Y%m%d-%H%M%S')}_{style.name}_{spec.scenario_hash}.csv"
 
+    if args.diagnose:
+        return diagnose(client, vehicle_id, destination, STYLES[args.style])
+
     source = WatchedSource(client, interval_s=SAMPLE_INTERVAL_S)
     try:
         source.start()
@@ -363,7 +429,8 @@ def main(argv=None) -> int:
               "route_from": how.get("how"), "style": style.name}
 
     try:
-        send_off(client, vehicle_id, destination, style)
+        journey.accepted = send_off(client, vehicle_id, destination, style)
+        print(f"  accepted  : drive_to{list(journey.accepted) or ' (pos only)'}\n")
         summary = collect_run(
             source, spec, csv_path, seconds=args.minutes * 60.0,
             beamng=beamng, on_progress=journey.tick,
@@ -378,6 +445,85 @@ def main(argv=None) -> int:
     if summary["capture_error"]:
         print(f"  capture error: {summary['capture_error']}")
     print(f"  {csv_path}")
+    return 0
+
+
+#: The electrics worth seeing when a car will not move. Each one is a
+#: different reason, and they are indistinguishable from the outside.
+WHY_STUCK = ("parkingbrake", "ignitionLevel", "engineRunning", "rpm", "gear",
+             "throttle", "brake", "clutch", "wheelspeed", "fuel", "damage")
+
+
+def read_electrics(client, keys) -> dict:
+    """Read a few electrics, draining the async queue until they arrive."""
+    code = ("return jsonEncode({"
+            + ", ".join(f"{k} = electrics.values.{k}" for k in keys)
+            + "})")
+    for attempt in range(8):
+        if attempt:
+            time.sleep(0.2)
+        try:
+            raw = client.call("run_lua_vehicle", {"code": code})
+        except MCPError as error:
+            return {"error": str(error)}
+        for value in (raw.values() if isinstance(raw, dict) else [raw]):
+            if not isinstance(value, str) or "queued" in value:
+                continue
+            try:
+                return json.loads(value)
+            except (json.JSONDecodeError, ValueError):
+                continue
+    return {}
+
+
+def diagnose(client, vehicle_id: int, destination: dict, style: Style) -> int:
+    """Work out why the car is not moving, instead of guessing at it.
+
+    Three things stop a car that has been told to drive, and they look
+    identical from outside: a refused `drive_to`, a parking brake nobody
+    released, and an AI that took the order and cannot route to the target.
+    """
+    print("\n  BEFORE")
+    before = read_electrics(client, WHY_STUCK)
+    for key in WHY_STUCK:
+        if key in before:
+            print(f"    {key:16} {before[key]}")
+    if before.get("parkingbrake"):
+        print("    ^ the parking brake is on. The AI will not override it.")
+
+    print("\n  SENDING OFF")
+    try:
+        accepted = send_off(client, vehicle_id, destination, style)
+    except RuntimeError as error:
+        print(f"    {error}")
+        return 1
+    print(f"    accepted: drive_to{list(accepted) or ' (pos only)'}")
+
+    print("\n  WHAT THE AI THINKS IT IS DOING")
+    for attempt in range(8):
+        if attempt:
+            time.sleep(0.2)
+        state = client.call("get_ai", {"id": vehicle_id})
+        if isinstance(state, dict) and state:
+            print(f"    {json.dumps(state, sort_keys=True)}")
+            break
+        if isinstance(state, str) and "queued" not in state:
+            print(f"    {state[:200]}")
+            break
+
+    print("\n  AFTER FIVE SECONDS")
+    time.sleep(5.0)
+    after = read_electrics(client, WHY_STUCK)
+    for key in WHY_STUCK:
+        if key in after:
+            changed = "" if before.get(key) == after.get(key) else "   <- changed"
+            print(f"    {key:16} {after[key]}{changed}")
+
+    moving = float(after.get("wheelspeed") or 0.0) > 0.5
+    print(f"\n  {'The car is moving.' if moving else 'The car is still stationary.'}")
+    if not moving:
+        print("  Nothing above ruled it out. Send this whole output back.")
+    hand_back(client, vehicle_id)
     return 0
 
 
