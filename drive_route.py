@@ -40,6 +40,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from collect.decode import is_async_notice  # noqa: E402
 from collect.mcp_source import MCPTrajectorySource  # noqa: E402
+from collect.vm import VehicleVM  # noqa: E402
 from collect.run import collect_run  # noqa: E402
 from collect.scenario import ScenarioSpec  # noqa: E402
 from sim.mcp_client import DEFAULT_ENDPOINT, MCPClient, MCPError  # noqa: E402
@@ -202,18 +203,14 @@ def ask(client, tool: str, arguments: dict | None = None,
     return None
 
 
-def vehicle_lua(client, code: str, attempts: int = 10, wait_s: float = 0.2):
-    """Run Lua in the vehicle VM and hand back the parsed answer."""
-    raw = ask(client, "run_lua_vehicle", {"code": code}, attempts, wait_s)
-    if raw is None:
-        return None
-    for value in (raw.values() if isinstance(raw, dict) else [raw]):
-        if isinstance(value, str):
-            try:
-                return json.loads(value)
-            except (json.JSONDecodeError, ValueError):
-                return value
-    return raw
+def vehicle_lua(client, code: str, default=None):
+    """Run Lua in the vehicle VM and hand back *this* request's answer.
+
+    Replies from `run_lua_vehicle` carry nothing saying which request they
+    answer, so reading whatever arrives means reading the previous call's
+    result. `VehicleVM` tags each request and waits for its own.
+    """
+    return VehicleVM(client).try_call(code, default=default)
 
 
 #: Ways to let a car go, most likely first. `inject_input` sets an input for a
@@ -238,17 +235,17 @@ RELEASES = (
 #: Whatever is asked for here is all that comes back. `speed_now` read
 #: `wheelspeed` out of this while this did not fetch it, so every attempt
 #: measured 0.00 m/s and a car that was plainly driving was reported stuck.
-HOLDING_LUA = ("return jsonEncode({parkingbrake = electrics.values.parkingbrake, "
+HOLDING_LUA = ("return {parkingbrake = electrics.values.parkingbrake, "
                "brake = electrics.values.brake, "
                "throttle = electrics.values.throttle, "
                "gear = electrics.values.gearIndex, "
                "wheelspeed = electrics.values.wheelspeed, "
-               "rpm = electrics.values.rpm})")
+               "rpm = electrics.values.rpm}")
 
 
 def held_by(client) -> dict:
     """What is currently holding the car still, as the vehicle reports it."""
-    state = vehicle_lua(client, HOLDING_LUA)
+    state = vehicle_lua(client, HOLDING_LUA, default={})
     return state if isinstance(state, dict) else {}
 
 
@@ -263,10 +260,7 @@ def free_the_car(client, vehicle_id: int, report=None) -> str | None:
         return "already free"
 
     for name, action in RELEASES:
-        vehicle_lua(client, f"""
-local ok, err = pcall(function() {action} end)
-return jsonEncode({{ok = ok, error = (not ok) and tostring(err) or nil}})
-""")
+        vehicle_lua(client, f"{action} return true")
         time.sleep(0.3)
         if not held_by(client).get("parkingbrake"):
             if report:
@@ -540,11 +534,10 @@ WHY_STUCK = ("parkingbrake", "ignitionLevel", "engineRunning", "rpm", "gear",
 
 
 def read_electrics(client, keys) -> dict:
-    """Read a few electrics, waiting out the async queue."""
-    code = ("return jsonEncode({"
-            + ", ".join(f"{k} = electrics.values.{k}" for k in keys)
-            + "})")
-    state = vehicle_lua(client, code)
+    """Read a few electrics, as the answer to this request and no other."""
+    code = ("return {" + ", ".join(f"{k} = electrics.values.{k}" for k in keys)
+            + "}")
+    state = vehicle_lua(client, code, default={})
     return state if isinstance(state, dict) else {}
 
 

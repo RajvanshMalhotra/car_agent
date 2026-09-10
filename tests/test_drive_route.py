@@ -15,6 +15,13 @@ from drive_route import STYLES, Journey, Style, find_destination, resolve_destin
 
 
 class FakeClient:
+    """An MCP client double that answers vehicle-VM calls with the right tag.
+
+    The real VM answers late and unlabelled, and `VehicleVM` exists to pair a
+    reply with its request. A double that answered untagged would make every
+    vehicle read time out, which is a different bug from the one under test.
+    """
+
     def __init__(self, answers=None):
         self.calls = []
         self.answers = answers or {}
@@ -22,10 +29,29 @@ class FakeClient:
     def call(self, name, arguments=None):
         self.calls.append((name, arguments or {}))
         answer = self.answers.get(name, {})
-        return answer(arguments) if callable(answer) else answer
+        if callable(answer):
+            answer = answer(arguments)
+        if name == "run_lua_vehicle":
+            return self._tagged(arguments or {}, answer)
+        return answer
+
+    @staticmethod
+    def _tagged(arguments, value):
+        code = arguments.get("code", "")
+        if "tag = '" not in code:
+            return value
+        tag = code.split("tag = '")[1].split("'")[0]
+        if isinstance(value, dict) and set(value) == {"73126"}:
+            value = json.loads(value["73126"])
+        return {"73126": json.dumps({"tag": tag, "ok": True, "value": value})}
 
     def tools(self, name):
         return [args for tool, args in self.calls if tool == name]
+
+    def vm_codes(self):
+        """The Lua bodies asked for, with the tagging wrapper stripped."""
+        return [args["code"] for tool, args in self.calls
+                if tool == "run_lua_vehicle"]
 
 
 def route_reply(how="groundMarkers.targetPos", x=100.0, y=200.0, z=5.0):
@@ -134,11 +160,14 @@ def test_send_off_hands_the_destination_to_the_games_ai():
     assert drive_to["id"] == 7
 
 
+def held(parkingbrake=1, brake=0.3, wheelspeed=0.0):
+    """The value a vehicle-VM read of what is holding the car returns."""
+    return {"parkingbrake": parkingbrake, "brake": brake, "throttle": 0,
+            "gear": 0, "rpm": 800.0, "wheelspeed": wheelspeed}
+
+
 def holding(parkingbrake=1, brake=0.3, wheelspeed=0.0):
-    """A vehicle VM reply describing what is holding the car still."""
-    return {"7": json.dumps({"parkingbrake": parkingbrake, "brake": brake,
-                             "throttle": 0, "gear": 0, "rpm": 800.0,
-                             "wheelspeed": wheelspeed})}
+    return held(parkingbrake, brake, wheelspeed)
 
 
 def test_the_holding_query_fetches_every_field_read_back_from_it():
@@ -150,7 +179,7 @@ def test_the_holding_query_fetches_every_field_read_back_from_it():
 
 
 def test_speed_now_reads_the_speed():
-    client = FakeClient({"run_lua_vehicle": holding(wheelspeed=17.5)})
+    client = FakeClient({"run_lua_vehicle": held(wheelspeed=17.5)})
     assert drive_route.speed_now(client) == 17.5
 
 
@@ -158,14 +187,14 @@ def test_a_car_that_covered_ground_is_moving():
     positions = [{"vehicle": {"pos": {"x": 0.0, "y": 0.0}}},
                  {"vehicle": {"pos": {"x": 100.0, "y": 0.0}}}]
     client = FakeClient({"get_status": lambda _a: positions.pop(0),
-                         "run_lua_vehicle": holding(wheelspeed=0.0)})
+                         "run_lua_vehicle": held(wheelspeed=0.0)})
     assert drive_route.did_it_move(client, "test", settle_s=0.0) is True
 
 
 def test_a_car_that_stayed_put_is_not_moving():
     still = {"vehicle": {"pos": {"x": 0.0, "y": 0.0}}}
     client = FakeClient({"get_status": still,
-                         "run_lua_vehicle": holding(wheelspeed=0.0)})
+                         "run_lua_vehicle": held(wheelspeed=0.0)})
     assert drive_route.did_it_move(client, "test", settle_s=0.0) is False
 
 
@@ -173,7 +202,7 @@ def test_a_rocking_car_is_not_mistaken_for_a_driving_one():
     positions = [{"vehicle": {"pos": {"x": 0.0, "y": 0.0}}},
                  {"vehicle": {"pos": {"x": 0.4, "y": 0.1}}}]
     client = FakeClient({"get_status": lambda _a: positions.pop(0),
-                         "run_lua_vehicle": holding(wheelspeed=0.0)})
+                         "run_lua_vehicle": held(wheelspeed=0.0)})
     assert drive_route.did_it_move(client, "test", settle_s=0.0) is False
 
 
@@ -186,23 +215,23 @@ def test_speed_still_settles_it_when_position_is_unavailable():
 def test_a_free_car_is_left_alone():
     client = FakeClient({"run_lua_vehicle": holding(parkingbrake=0)})
     assert drive_route.free_the_car(client, 7) == "already free"
-    assert len(client.tools("run_lua_vehicle")) == 1
+    # One read, plus whatever draining the tagged transport needed.
+    assert not any("input.event" in code for code in client.vm_codes())
 
 
 def test_the_parking_brake_goes_through_the_vehicles_own_input_system():
     # `inject_input` sets an input for a moment and the vehicle reasserts
     # itself, which is why the brake survived being told to release.
-    replies = [holding(1), {"7": json.dumps({"ok": True})}, holding(0)]
+    replies = [held(1), True, held(0)]
     client = FakeClient({"run_lua_vehicle": lambda _a: replies.pop(0)})
     assert drive_route.free_the_car(client, 7) == "input.event, FILTER_DIRECT"
-    code = client.tools("run_lua_vehicle")[1]["code"]
-    assert "input.event('parkingbrake', 0, FILTER_DIRECT)" in code
+    assert any("input.event('parkingbrake', 0, FILTER_DIRECT)" in code
+               for code in client.vm_codes())
 
 
 def test_it_moves_on_to_the_next_release_when_one_does_not_take():
     # still held after the first, free after the second
-    replies = [holding(1), {"7": json.dumps({"ok": True})}, holding(1),
-               {"7": json.dumps({"ok": True})}, holding(0)]
+    replies = [held(1), True, held(1), True, held(0)]
     client = FakeClient({"run_lua_vehicle": lambda _a: replies.pop(0)})
     assert drive_route.free_the_car(client, 7) == "input.event, default filter"
 
@@ -217,9 +246,8 @@ def test_it_reports_when_nothing_lets_the_car_go():
 def test_every_release_route_is_tried_before_giving_up():
     client = FakeClient({"run_lua_vehicle": holding(1)})
     drive_route.free_the_car(client, 7)
-    attempted = [args["code"] for args in client.tools("run_lua_vehicle")]
     for _name, action in drive_route.RELEASES:
-        assert any(action in code for code in attempted)
+        assert any(action in code for code in client.vm_codes())
 
 
 def test_an_async_notice_is_not_mistaken_for_an_answer():

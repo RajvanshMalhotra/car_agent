@@ -32,7 +32,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-from collect.decode import is_async_notice  # noqa: E402
+from collect.vm import VMError, VehicleVM  # noqa: E402
 from sim.mcp_client import DEFAULT_ENDPOINT, MCPClient, MCPError  # noqa: E402
 
 #: Long enough that a car which is going to move has moved.
@@ -42,36 +42,11 @@ SETTLE_S = 6.0
 MOVED_M = 3.0
 
 
-def vehicle_lua(client, code: str, attempts: int = 12, wait_s: float = 0.25):
-    """Run Lua in the vehicle VM, waiting out the async notice."""
-    for attempt in range(attempts):
-        if attempt:
-            time.sleep(wait_s)
-        try:
-            raw = client.call("run_lua_vehicle", {"code": code})
-        except MCPError as error:
-            return {"mcp_error": str(error)}
-        if raw is None or is_async_notice(raw):
-            continue
-        for value in (raw.values() if isinstance(raw, dict) else [raw]):
-            if isinstance(value, str):
-                try:
-                    return json.loads(value)
-                except (json.JSONDecodeError, ValueError):
-                    return {"raw": value[:400]}
-        return raw
-    return {"timeout": True}
-
-
-WRAP = """
-local ok, value = pcall(function() %s end)
-if not ok then return jsonEncode({error = tostring(value)}) end
-return jsonEncode(value == nil and {ok = true} or value)
-"""
-
-
-def run(client, body: str):
-    return vehicle_lua(client, WRAP % body)
+def show(label: str, value) -> None:
+    print("\n" + "=" * 70)
+    print(f"  {label}")
+    print("=" * 70)
+    print(json.dumps(value, indent=2, sort_keys=True, default=str))
 
 
 # -- what we have never looked at -------------------------------------------
@@ -129,17 +104,18 @@ return {x = p.x, y = p.y, z = p.z, speed = electrics.values.wheelspeed}
 """
 
 
-def where(client):
-    answer = run(client, POSITION)
+def where(vm):
+    """Where the car is. Its own answer, not whatever arrived last."""
+    answer = vm.try_call(POSITION)
     if not isinstance(answer, dict) or "x" not in answer:
         return None
     return answer
 
 
-def moved(client, label: str, before) -> bool:
+def moved(vm, label: str, before) -> bool:
     """Wait, then report the ground covered. One number, unambiguous."""
     time.sleep(SETTLE_S)
-    after = where(client)
+    after = where(vm)
     if before is None or after is None:
         print(f"    {label:38} could not read position")
         return False
@@ -154,13 +130,14 @@ def moved(client, label: str, before) -> bool:
 # -- the experiments, one variable each -------------------------------------
 
 
-def experiment(client, label: str, body: str) -> bool:
-    before = where(client)
-    result = run(client, body)
-    if isinstance(result, dict) and result.get("error"):
-        print(f"    {label:38} refused: {result['error'][:60]}")
+def experiment(vm, label: str, body: str) -> bool:
+    before = where(vm)
+    try:
+        vm.call(body)
+    except VMError as error:
+        print(f"    {label:38} refused: {str(error)[:60]}")
         return False
-    return moved(client, label, before)
+    return moved(vm, label, before)
 
 
 #: Ways to clear an input that has been latched by injection. `input.event`
@@ -188,39 +165,36 @@ def main(argv=None) -> int:
         print(f"\n  {error}", file=sys.stderr)
         return 1
 
-    print("\n" + "=" * 70)
-    print("  THE INPUT STATE  -- a latched zero here outranks the AI")
-    print("=" * 70)
-    print(json.dumps(run(client, "return (function() " + INPUT_STATE + " end)()"),
-                     indent=2, sort_keys=True))
+    vm = VehicleVM(client)
 
-    print("\n" + "=" * 70)
-    print("  THE AI, FROM INSIDE THE VEHICLE")
-    print("=" * 70)
-    print(json.dumps(run(client, "return (function() " + AI_STATE + " end)()"),
-                     indent=2, sort_keys=True))
+    show("THE INPUT STATE  -- a latched zero here outranks the AI",
+         vm.try_call(INPUT_STATE, {"unreadable": True}))
+    show("THE AI, FROM INSIDE THE VEHICLE",
+         vm.try_call(AI_STATE, {"unreadable": True}))
 
     print("\n" + "=" * 70)
     print("  WHAT MOVES IT  -- one variable at a time")
     print("=" * 70)
+    resting = where(vm)
+    print(f"    resting speed: {resting['speed']:.2f} m/s" if resting
+          else "    could not read the car at all")
     print(f"    {'attempt':38} {'moved':>7}   {'speed':>6}")
 
     # 1. The AI commanded directly, with nothing else touched. If this drives,
     #    every MCP wrapper between us and it was the problem.
-    span = experiment(client, "ai.setMode('span'), nothing else touched",
+    span = experiment(vm, "ai.setMode('span'), nothing else touched",
                       "ai.setMode('span')")
-    run(client, "ai.setMode('disabled')")
+    vm.try_call("ai.setMode('disabled')")
     time.sleep(1.0)
 
     # 2. The same, after clearing whatever the injections may have latched.
     cleared = False
     if not span:
         for label, action in CLEARERS:
-            run(client, action)
+            vm.try_call(action)
             time.sleep(0.5)
-            cleared = experiment(client, f"span after: {label}",
-                                 "ai.setMode('span')")
-            run(client, "ai.setMode('disabled')")
+            cleared = experiment(vm, f"span after: {label}", "ai.setMode('span')")
+            vm.try_call("ai.setMode('disabled')")
             time.sleep(1.0)
             if cleared:
                 break
@@ -233,15 +207,10 @@ def main(argv=None) -> int:
         except MCPError as error:
             print(f"    reset_vehicle refused: {error}")
         time.sleep(2.0)
-        reset = experiment(client, "span after reset_vehicle",
-                           "ai.setMode('span')")
-        run(client, "ai.setMode('disabled')")
+        reset = experiment(vm, "span after reset_vehicle", "ai.setMode('span')")
+        vm.try_call("ai.setMode('disabled')")
 
-    print("\n" + "=" * 70)
-    print("  AFTERWARDS")
-    print("=" * 70)
-    print(json.dumps(run(client, "return (function() " + INPUT_STATE + " end)()"),
-                     indent=2, sort_keys=True))
+    show("AFTERWARDS", vm.try_call(INPUT_STATE, {"unreadable": True}))
 
     print("\n  WHAT THIS SAYS")
     if span:
@@ -258,8 +227,9 @@ def main(argv=None) -> int:
         print("    injecting inputs at all.")
     else:
         print("    Nothing moved it, including the AI commanded directly.")
-        print("    That rules out this whole layer. Send this output back --")
-        print("    the input state above is the part that matters.")
+        print("    Send this output back -- the input state above is the part")
+        print("    that matters, and it is now a reading of this request and")
+        print("    not of whatever the queue happened to be holding.")
     return 0
 
 
