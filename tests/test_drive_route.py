@@ -134,10 +134,53 @@ def test_send_off_hands_the_destination_to_the_games_ai():
     assert drive_to["id"] == 7
 
 
-def holding(parkingbrake=1, brake=0.3):
+def holding(parkingbrake=1, brake=0.3, wheelspeed=0.0):
     """A vehicle VM reply describing what is holding the car still."""
     return {"7": json.dumps({"parkingbrake": parkingbrake, "brake": brake,
-                             "throttle": 0, "gear": 0})}
+                             "throttle": 0, "gear": 0, "rpm": 800.0,
+                             "wheelspeed": wheelspeed})}
+
+
+def test_the_holding_query_fetches_every_field_read_back_from_it():
+    # speed_now read wheelspeed out of a query that did not ask for it, so
+    # every attempt measured zero and a driving car was reported stuck.
+    for field in ("parkingbrake", "brake", "throttle", "gearIndex",
+                  "wheelspeed", "rpm"):
+        assert field in drive_route.HOLDING_LUA, field
+
+
+def test_speed_now_reads_the_speed():
+    client = FakeClient({"run_lua_vehicle": holding(wheelspeed=17.5)})
+    assert drive_route.speed_now(client) == 17.5
+
+
+def test_a_car_that_covered_ground_is_moving():
+    positions = [{"vehicle": {"pos": {"x": 0.0, "y": 0.0}}},
+                 {"vehicle": {"pos": {"x": 100.0, "y": 0.0}}}]
+    client = FakeClient({"get_status": lambda _a: positions.pop(0),
+                         "run_lua_vehicle": holding(wheelspeed=0.0)})
+    assert drive_route.did_it_move(client, "test", settle_s=0.0) is True
+
+
+def test_a_car_that_stayed_put_is_not_moving():
+    still = {"vehicle": {"pos": {"x": 0.0, "y": 0.0}}}
+    client = FakeClient({"get_status": still,
+                         "run_lua_vehicle": holding(wheelspeed=0.0)})
+    assert drive_route.did_it_move(client, "test", settle_s=0.0) is False
+
+
+def test_a_rocking_car_is_not_mistaken_for_a_driving_one():
+    positions = [{"vehicle": {"pos": {"x": 0.0, "y": 0.0}}},
+                 {"vehicle": {"pos": {"x": 0.4, "y": 0.1}}}]
+    client = FakeClient({"get_status": lambda _a: positions.pop(0),
+                         "run_lua_vehicle": holding(wheelspeed=0.0)})
+    assert drive_route.did_it_move(client, "test", settle_s=0.0) is False
+
+
+def test_speed_still_settles_it_when_position_is_unavailable():
+    client = FakeClient({"get_status": None,
+                         "run_lua_vehicle": holding(wheelspeed=17.5)})
+    assert drive_route.did_it_move(client, "test", settle_s=0.0) is True
 
 
 def test_a_free_car_is_left_alone():
@@ -293,7 +336,11 @@ def test_a_refusal_is_recognised_however_it_is_worded(reply):
     assert drive_route.refused(reply) is True
 
 
-@pytest.mark.parametrize("reply", [{}, "ok", "route set", 1, None])
+@pytest.mark.parametrize("reply", [
+    {}, "ok", "route set", 1, None,
+    # What BeamNG actually answers a good drive_to with.
+    "vehicle 132025 driving to node DR835_8 (nearest to 553.6, -892.3, 153.9)",
+])
 def test_an_acceptance_is_not_mistaken_for_a_refusal(reply):
     assert drive_route.refused(reply) is False
 

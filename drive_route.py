@@ -235,10 +235,15 @@ RELEASES = (
      "electrics.values.brake = 0 electrics.values.brake_input = 0"),
 )
 
+#: Whatever is asked for here is all that comes back. `speed_now` read
+#: `wheelspeed` out of this while this did not fetch it, so every attempt
+#: measured 0.00 m/s and a car that was plainly driving was reported stuck.
 HOLDING_LUA = ("return jsonEncode({parkingbrake = electrics.values.parkingbrake, "
                "brake = electrics.values.brake, "
                "throttle = electrics.values.throttle, "
-               "gear = electrics.values.gearIndex})")
+               "gear = electrics.values.gearIndex, "
+               "wheelspeed = electrics.values.wheelspeed, "
+               "rpm = electrics.values.rpm})")
 
 
 def held_by(client) -> dict:
@@ -396,10 +401,13 @@ class Journey:
         self._report(rows, elapsed, total, left)
 
     def _report(self, rows, elapsed, total, left) -> None:
+        latest = getattr(self.source, "last_sample", None) or {}
+        speed = float(latest.get("speed_mps") or 0.0)
         where = "stopped" if self.stopped_until else (
             f"{left:6.0f} m to go" if left is not None else "driving")
         print(f"\r  {elapsed:5.0f}s / {total:.0f}s   {rows:7d} rows   "
-              f"{where}   {self.stops} stops", end="", flush=True)
+              f"{speed:5.1f} m/s   {where}   {self.stops} stops",
+              end="", flush=True)
 
 
 class WatchedSource(MCPTrajectorySource):
@@ -594,12 +602,41 @@ def speed_now(client) -> float:
     return float(held_by(client).get("wheelspeed") or 0.0)
 
 
-def did_it_move(client, label: str, shots: list | None = None) -> bool:
-    """Wait, then say whether the car actually went anywhere."""
-    time.sleep(SETTLE_S)
+def position_now(client) -> tuple[float, float] | None:
+    status = ask(client, "get_status")
+    position = ((status or {}).get("vehicle") or {}).get("pos") \
+        if isinstance(status, dict) else None
+    if not position:
+        return None
+    return float(position["x"]), float(position["y"])
+
+
+#: Metres of travel that settle it. A car rocking on its springs moves
+#: centimetres; a car driving moves tens of metres in six seconds.
+MOVED_M = 3.0
+
+
+def did_it_move(client, label: str, shots: list | None = None,
+                settle_s: float | None = None) -> bool:
+    """Wait, then say whether the car actually went anywhere.
+
+    Distance travelled, not a single speed sample: one reading taken at the
+    wrong instant -- mid gear change, or against a kerb -- says stationary
+    about a car that is driving.
+    """
+    before = position_now(client)
+    time.sleep(SETTLE_S if settle_s is None else settle_s)
+    after = position_now(client)
     speed = speed_now(client)
-    moving = speed > MOVING_MPS
-    print(f"    {label:34} {speed:7.2f} m/s   "
+
+    if before is None or after is None:
+        travelled = float("nan")
+        moving = speed > MOVING_MPS
+    else:
+        travelled = math.hypot(after[0] - before[0], after[1] - before[1])
+        moving = travelled > MOVED_M or speed > MOVING_MPS
+
+    print(f"    {label:34} {travelled:7.1f} m   {speed:6.2f} m/s   "
           f"{'MOVING' if moving else 'stationary'}")
     if shots is not None:
         look(client, label, shots)
@@ -640,7 +677,7 @@ def diagnose(client, vehicle_id: int, destination: dict, style: Style) -> int:
         print("    Nothing released the parking brake.")
 
     print("\n  WHAT MOVES IT")
-    print(f"    {'attempt':34} {'speed':>7}")
+    print(f"    {'attempt':34} {'moved':>7}   {'speed':>6}")
 
     # The control. Roaming needs no destination and no route, so if this does
     # not move the car then nothing about the route is to blame.
