@@ -540,52 +540,104 @@ def read_electrics(client, keys) -> dict:
     return state if isinstance(state, dict) else {}
 
 
+#: How long to give each attempt before deciding it did nothing.
+SETTLE_S = 6.0
+#: Above this the car is unambiguously moving, not just settling on its springs.
+MOVING_MPS = 1.0
+
+
+def speed_now(client) -> float:
+    return float(held_by(client).get("wheelspeed") or 0.0)
+
+
+def did_it_move(client, label: str) -> bool:
+    """Wait, then say whether the car actually went anywhere."""
+    time.sleep(SETTLE_S)
+    speed = speed_now(client)
+    moving = speed > MOVING_MPS
+    print(f"    {label:34} {speed:7.2f} m/s   "
+          f"{'MOVING' if moving else 'stationary'}")
+    return moving
+
+
 def diagnose(client, vehicle_id: int, destination: dict, style: Style) -> int:
-    """Work out why the car is not moving, instead of guessing at it.
+    """Find out what actually moves this car, by trying things in order.
 
-    Three things stop a car that has been told to drive, and they look
-    identical from outside: a refused `drive_to`, a parking brake nobody
-    released, and an AI that took the order and cannot route to the target.
+    Three explanations fit "the car does not move" and they are
+    indistinguishable from outside: something is holding it, `drive_to` was
+    refused, or the AI took an order it cannot route. Guessing between them has
+    cost two rounds already, so this runs the experiment instead.
+
+    `set_ai(mode='span')` is the control: it is the only thing in this project
+    that has ever demonstrably driven a car. If span moves it and `drive_to`
+    does not, the car is fine and the routing is the problem.
     """
-    print("\n  BEFORE")
-    before = read_electrics(client, WHY_STUCK)
-    for key in WHY_STUCK:
-        if key in before:
-            print(f"    {key:16} {before[key]}")
-    if before.get("parkingbrake"):
-        print("    ^ the parking brake is on. The AI will not override it.")
+    print("\n  WHAT IS HOLDING IT")
+    for key, value in sorted(read_electrics(client, WHY_STUCK).items()):
+        print(f"    {key:16} {value}")
 
-    print("\n  LETTING THE CAR GO")
+    print("\n  LETTING IT GO")
     freed = free_the_car(client, vehicle_id, report=lambda why: print(f"    {why}"))
     print(f"    now: {json.dumps(held_by(client), sort_keys=True)}")
     if freed is None:
-        print("    Send this back -- none of the release routes worked.")
+        print("    Nothing released the parking brake.")
 
-    print("\n  SENDING OFF")
-    try:
-        accepted = send_off(client, vehicle_id, destination, style)
-    except RuntimeError as error:
-        print(f"    {error}")
-        return 1
-    print(f"    accepted: drive_to{list(accepted) or ' (pos only)'}")
+    print("\n  WHAT MOVES IT")
+    print(f"    {'attempt':34} {'speed':>7}")
+
+    # The control. Roaming needs no destination and no route, so if this does
+    # not move the car then nothing about the route is to blame.
+    client.call("set_ai", {"id": vehicle_id, "mode": "span",
+                           "aggression": style.aggression, "avoidCars": True})
+    span_moved = did_it_move(client, "set_ai span (the known-good one)")
+    client.call("set_ai", {"id": vehicle_id, "mode": "disabled"})
+    time.sleep(1.0)
+
+    # drive_to with no set_ai in front of it.
+    reply = client.call("drive_to", {
+        "id": vehicle_id, "pos": destination,
+        "aggression": style.aggression, "avoidCars": True,
+    })
+    print(f"    drive_to said: {str(reply)[:100]}")
+    alone_moved = did_it_move(client, "drive_to on its own")
+    client.call("set_ai", {"id": vehicle_id, "mode": "disabled"})
+    time.sleep(1.0)
+
+    # drive_to after putting the AI in manual, which is what this script does.
+    client.call("set_ai", {"id": vehicle_id, "mode": "manual",
+                           "aggression": style.aggression, "avoidCars": True})
+    client.call("drive_to", {
+        "id": vehicle_id, "pos": destination,
+        "aggression": style.aggression, "avoidCars": True,
+        "driveInLane": style.drive_in_lane, "routeSpeedMode": style.speed_mode,
+    })
+    manual_moved = did_it_move(client, "set_ai manual, then drive_to")
 
     print("\n  WHAT THE AI THINKS IT IS DOING")
     state = ask(client, "get_ai", {"id": vehicle_id})
     print(f"    {json.dumps(state, sort_keys=True) if isinstance(state, dict) else state}")
 
-    print("\n  AFTER FIVE SECONDS")
-    time.sleep(5.0)
-    after = read_electrics(client, WHY_STUCK)
-    for key in WHY_STUCK:
-        if key in after:
-            changed = "" if before.get(key) == after.get(key) else "   <- changed"
-            print(f"    {key:16} {after[key]}{changed}")
+    print("\n  WHETHER THE ROUTE IS EVEN REACHABLE")
+    ground = ask(client, "get_ground_at_point", {"pos": destination})
+    print(f"    under the destination: {ground}")
+    navgraph = ask(client, "get_navgraph", {"near": destination, "radius": 50})
+    print(f"    navgraph near it: {str(navgraph)[:200]}")
 
-    moving = float(after.get("wheelspeed") or 0.0) > 0.5
-    print(f"\n  {'The car is moving.' if moving else 'The car is still stationary.'}")
-    if not moving:
-        print("  Nothing above ruled it out. Send this whole output back.")
     hand_back(client, vehicle_id)
+
+    print("\n  VERDICT")
+    if not span_moved and not alone_moved and not manual_moved:
+        print("    Nothing moved it. The car itself is stuck, not the routing.")
+        print("    Try: recover the vehicle in game (Insert), or spawn a fresh")
+        print("    one, then run this again.")
+    elif span_moved and not (alone_moved or manual_moved):
+        print("    The car drives, but not to your destination. The routing is")
+        print("    the problem, not the car -- see the navgraph line above.")
+    elif alone_moved and not manual_moved:
+        print("    drive_to works on its own. Putting the AI in manual first")
+        print("    is what breaks it, so that call goes.")
+    else:
+        print("    drive_to works. Run:  py drive_route.py aggressive")
     return 0
 
 
