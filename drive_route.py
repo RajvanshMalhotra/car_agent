@@ -4,11 +4,12 @@
     py drive_route.py aggressive
     py drive_route.py economical
     py drive_route.py stops
+    py drive_route.py aggressive --roam   no destination, cover the network
     py drive_route.py --show-route        what the game says your route is
 
 Set a destination in BeamNG's map first -- the blue line on the road is the
-route. This reads that destination, hands it to the game's own AI, and records
-the drive at 100 Hz through the vehicle's Lua VM.
+route. This reads where that line ends, drives there, and records the whole
+thing at 100 Hz from inside the vehicle's physics VM.
 
 Three styles, chosen because they are the three that reach a starter battery:
 
@@ -20,9 +21,14 @@ Three styles, chosen because they are the three that reach a starter battery:
 
 Hard braking is deliberately not a style. It barely touches an SLI battery.
 
+**The AI is commanded from inside the vehicle VM**, not through the MCP
+`set_ai` and `drive_to` tools. That is not a preference, it is a measurement:
+`drive_to` reported an accepted route to a real navgraph node and the car sat
+still, while `ai.setMode('span')` in the vehicle's own Lua covered 32 m in six
+seconds from a standstill and released the parking brake on its way.
+
 The car is always handed back when this exits -- normally, on Ctrl+C, or on a
-crash. Leaving the AI engaged means the game keeps driving after the script has
-gone.
+crash. Leaving the AI engaged means the game keeps driving after this has gone.
 """
 
 from __future__ import annotations
@@ -40,9 +46,9 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from collect.decode import is_async_notice  # noqa: E402
 from collect.mcp_source import MCPTrajectorySource  # noqa: E402
-from collect.vm import VehicleVM  # noqa: E402
 from collect.run import collect_run  # noqa: E402
 from collect.scenario import ScenarioSpec  # noqa: E402
+from collect.vm import VMError, VehicleVM  # noqa: E402
 from sim.mcp_client import DEFAULT_ENDPOINT, MCPClient, MCPError  # noqa: E402
 
 RUNS = Path(__file__).parent / "runs"
@@ -58,11 +64,11 @@ ARRIVED_M = 25.0
 
 @dataclass(frozen=True)
 class Style:
-    """How to drive. One scalar reaches the AI; the rest is what we do to it."""
+    """How to drive. Everything here reaches the AI directly."""
 
     name: str
     aggression: float
-    #: BeamNG's speed mode. 'limit' obeys posted limits, 'off' ignores them.
+    #: 'limit' obeys posted limits, 'off' ignores them.
     speed_mode: str
     drive_in_lane: bool
     #: Seconds between stops, as a range. None means never stop.
@@ -95,11 +101,68 @@ STYLES = {
 }
 
 
+# -- the AI, from inside the vehicle ----------------------------------------
+
+
+class Ai:
+    """BeamNG's own driver, commanded in its own Lua VM.
+
+    Parameters are set before the mode, because setting the mode is what starts
+    the car and an aggression applied afterwards arrives late.
+
+    Nothing here injects an input. The AI takes the pedals itself, and releases
+    the parking brake on its way -- both observed, both left alone.
+    """
+
+    def __init__(self, vm: VehicleVM) -> None:
+        self.vm = vm
+
+    def configure(self, style: Style) -> None:
+        lane = "on" if style.drive_in_lane else "off"
+        self.vm.try_call(f"ai.setAggression({style.aggression}) return true")
+        self.vm.try_call(f"ai.driveInLane('{lane}') return true")
+        self.vm.try_call(f"ai.setSpeedMode('{style.speed_mode}') return true")
+        self.vm.try_call("ai.setAvoidCars('on') return true")
+
+    def roam(self) -> None:
+        self.vm.call("ai.setMode('span') return true")
+
+    def drive_to(self, waypoint: str) -> None:
+        """Drive to a named navgraph node.
+
+        `setTarget` before `setMode`: manual mode with no target is a car told
+        to drive somewhere and not told where.
+        """
+        self.vm.call(f"ai.setTarget('{waypoint}') return true")
+        self.vm.call("ai.setMode('manual') return true")
+
+    def halt(self) -> None:
+        """Stop where it is, engine running. That is the pathway being sampled."""
+        try:
+            self.vm.call("ai.setMode('stop') return true")
+        except VMError:
+            self.vm.try_call("ai.setMode('disabled') return true")
+
+    def release(self) -> None:
+        self.vm.try_call("ai.setMode('disabled') return true")
+
+    def is_driving(self) -> bool | None:
+        answer = self.vm.try_call("return {driving = ai.isDriving()}")
+        if isinstance(answer, dict) and "driving" in answer:
+            return bool(answer["driving"])
+        return None
+
+    def state(self) -> dict:
+        return self.vm.try_call(
+            "return {mode = ai.mode, aggression = ai.extAggression, "
+            "lane = ai.driveInLaneFlag}", default={}) or {}
+
+
 # -- finding the route ------------------------------------------------------
 
 #: `core_groundMarkers` is what draws the blue line. Its field names are
-#: undocumented and differ between builds, so this asks in several ways and
-#: reports which one answered rather than assuming any of them.
+#: undocumented and differ between builds, so this asks several ways and
+#: reports what the module actually holds when none of them answers.
 DESTINATION_LUA = """
 local function xyz(v)
   if type(v) ~= 'table' and type(v) ~= 'cdata' then return nil end
@@ -119,19 +182,15 @@ local function try(how, fn)
 end
 
 local found =
-  try('groundMarkers.targetPos', function()
-        return core_groundMarkers.targetPos end)
-  or try('groundMarkers.getTargetPos', function()
+  try('groundMarkers.getTargetPos', function()
         return core_groundMarkers.getTargetPos() end)
+  or try('groundMarkers.targetPos', function()
+        return core_groundMarkers.targetPos end)
   or try('groundMarkers.endWP', function()
         return core_groundMarkers.endWP end)
-  or try('groundMarkers.getPathTarget', function()
-        return core_groundMarkers.getPath()[#core_groundMarkers.getPath()] end)
 
 if found then return jsonEncode(found) end
 
--- Nothing recognised. Hand back what the module actually contains so the next
--- attempt is informed rather than another guess.
 local keys = {}
 local ok = pcall(function()
   for k, v in pairs(core_groundMarkers) do keys[k] = type(v) end
@@ -140,55 +199,13 @@ return jsonEncode({how = 'none', keys = ok and keys or 'core_groundMarkers missi
 """
 
 
-def find_destination(client) -> tuple[dict | None, dict]:
-    """Read the endpoint of the blue line, or explain why it could not."""
-    try:
-        raw = client.call("run_lua", {"code": DESTINATION_LUA})
-    except MCPError as error:
-        return None, {"how": "error", "error": str(error)}
-    if isinstance(raw, dict):
-        answer = raw
-    else:
-        try:
-            answer = json.loads(str(raw).strip())
-        except (json.JSONDecodeError, ValueError):
-            return None, {"how": "unparseable", "raw": str(raw)[:300]}
-    if answer.get("how") in (None, "none"):
-        return None, answer
-    return answer["pos"], answer
-
-
-# -- driving ----------------------------------------------------------------
-
-
-#: What to ask `drive_to` for, richest first. BeamNG's argument names and enum
-#: values are undocumented, and **a refused call does not raise** -- it comes
-#: back as text and the car simply never sets off, which from outside looks
-#: exactly like a broken AI. So drop arguments until one is taken.
-DRIVE_TO_ARGUMENTS = (
-    ("aggression", "avoidCars", "driveInLane", "routeSpeedMode"),
-    ("aggression", "avoidCars", "driveInLane"),
-    ("aggression", "avoidCars"),
-    ("aggression",),
-    (),
-)
-
-
-def refused(result) -> bool:
-    """BeamNG reports a bad call in the returned text rather than by raising."""
-    text = str(result).lower()
-    return any(word in text for word in ("fail", "error", "unknown", "invalid",
-                                         "bad argument", "nil value"))
-
-
 def ask(client, tool: str, arguments: dict | None = None,
         attempts: int = 10, wait_s: float = 0.2):
     """Call a tool and wait out the async notice.
 
     Several tools answer "requested (async); call again in a moment" and
-    deliver on a later call. Taking that notice for the answer is how the first
-    probe run came back shifted by two, and how `get_ai` printed the notice
-    instead of the AI's state.
+    deliver on a later call. Taking that notice for the answer is how `get_ai`
+    once printed the notice instead of the AI's state.
     """
     for attempt in range(attempts):
         if attempt and wait_s:
@@ -203,134 +220,41 @@ def ask(client, tool: str, arguments: dict | None = None,
     return None
 
 
-def vehicle_lua(client, code: str, default=None):
-    """Run Lua in the vehicle VM and hand back *this* request's answer.
+def find_destination(client) -> tuple[dict | None, dict]:
+    """Read the endpoint of the blue line, or explain why it could not."""
+    raw = ask(client, "run_lua", {"code": DESTINATION_LUA})
+    if isinstance(raw, dict) and "how" in raw:
+        answer = raw
+    else:
+        try:
+            answer = json.loads(str(raw).strip())
+        except (json.JSONDecodeError, ValueError, TypeError):
+            return None, {"how": "unparseable", "raw": str(raw)[:300]}
+    if answer.get("how") in (None, "none"):
+        return None, answer
+    return answer["pos"], answer
 
-    Replies from `run_lua_vehicle` carry nothing saying which request they
-    answer, so reading whatever arrives means reading the previous call's
-    result. `VehicleVM` tags each request and waits for its own.
+
+def waypoint_near(client, destination: dict) -> str | None:
+    """The navgraph node the AI can actually be sent to.
+
+    `ai.setTarget` takes a waypoint name, not a coordinate, and the game will
+    hold a target that does not exist without complaining. So the name comes
+    out of the navgraph rather than out of us.
     """
-    return VehicleVM(client).try_call(code, default=default)
-
-
-#: Ways to let a car go, most likely first. `inject_input` sets an input for a
-#: moment and the vehicle's own input system reasserts itself, which is why the
-#: parking brake survived being told to release. These go through the vehicle's
-#: input system instead, and each one is checked rather than assumed.
-RELEASES = (
-    ("input.event, FILTER_DIRECT",
-     "input.event('parkingbrake', 0, FILTER_DIRECT) "
-     "input.event('brake', 0, FILTER_DIRECT) "
-     "input.event('throttle', 0, FILTER_DIRECT)"),
-    ("input.event, default filter",
-     "input.event('parkingbrake', 0) input.event('brake', 0)"),
-    ("input.event, FILTER_AI",
-     "input.event('parkingbrake', 0, FILTER_AI) input.event('brake', 0, FILTER_AI)"),
-    ("electrics, written directly",
-     "electrics.values.parkingbrake = 0 "
-     "electrics.values.parkingbrake_input = 0 "
-     "electrics.values.brake = 0 electrics.values.brake_input = 0"),
-)
-
-#: Whatever is asked for here is all that comes back. `speed_now` read
-#: `wheelspeed` out of this while this did not fetch it, so every attempt
-#: measured 0.00 m/s and a car that was plainly driving was reported stuck.
-HOLDING_LUA = ("return {parkingbrake = electrics.values.parkingbrake, "
-               "brake = electrics.values.brake, "
-               "throttle = electrics.values.throttle, "
-               "gear = electrics.values.gearIndex, "
-               "wheelspeed = electrics.values.wheelspeed, "
-               "rpm = electrics.values.rpm}")
-
-
-def held_by(client) -> dict:
-    """What is currently holding the car still, as the vehicle reports it."""
-    state = vehicle_lua(client, HOLDING_LUA, default={})
-    return state if isinstance(state, dict) else {}
-
-
-def free_the_car(client, vehicle_id: int, report=None) -> str | None:
-    """Release anything holding the car still, and confirm it let go.
-
-    A spawned vehicle can sit with its parking brake on, and the AI will not
-    override it -- which from outside is indistinguishable from a refused
-    `drive_to`. Returns the name of whatever worked, or None.
-    """
-    if not held_by(client).get("parkingbrake"):
-        return "already free"
-
-    for name, action in RELEASES:
-        vehicle_lua(client, f"{action} return true")
-        time.sleep(0.3)
-        if not held_by(client).get("parkingbrake"):
-            if report:
-                report(f"released the parking brake with {name}")
-            return name
-    if report:
-        report("could not release the parking brake by any means")
+    graph = ask(client, "get_navgraph", {"near": destination, "radius": 100})
+    if not isinstance(graph, dict):
+        return None
+    closest = graph.get("closestRoad")
+    if isinstance(closest, dict):
+        return closest.get("from") or closest.get("to")
+    nodes = graph.get("nodes")
+    if isinstance(nodes, list) and nodes and isinstance(nodes[0], dict):
+        return nodes[0].get("name")
     return None
 
 
-def send_off(client, vehicle_id: int, destination: dict, style: Style,
-             accepted: tuple[str, ...] | None = None) -> tuple[str, ...]:
-    """Point the game's AI at the destination, and confirm that it agreed.
-
-    Returns the argument shape the game accepted, so a later call can pass it
-    back and skip the probing. Raises if nothing is accepted -- the alternative
-    is a silent refusal, which is what "the car doesn't move at all" looks like.
-
-    `drive_to` is issued once per leg and left alone: re-sending it makes the AI
-    throw away the route it has planned and start again.
-    """
-    free_the_car(client, vehicle_id)
-    client.call("set_ai", {"id": vehicle_id, "mode": "manual",
-                           "aggression": style.aggression, "avoidCars": True})
-
-    available = {
-        "aggression": style.aggression,
-        "avoidCars": True,
-        "driveInLane": style.drive_in_lane,
-        "routeSpeedMode": style.speed_mode,
-    }
-    attempts = []
-    for names in ((accepted,) if accepted is not None else DRIVE_TO_ARGUMENTS):
-        arguments = {"id": vehicle_id, "pos": destination}
-        arguments.update({name: available[name] for name in names})
-        result = client.call("drive_to", arguments)
-        if not refused(result):
-            return names
-        attempts.append((names, str(result)[:120]))
-
-    raise RuntimeError(
-        "BeamNG would not accept any form of drive_to:\n    "
-        + "\n    ".join(f"{list(names) or 'pos only'}: {why}"
-                         for names, why in attempts)
-    )
-
-
-def halt(client, vehicle_id: int) -> None:
-    """Stop the car where it is, engine still running."""
-    client.call("set_ai", {"id": vehicle_id, "mode": "disabled"})
-    client.call("inject_input", {"id": vehicle_id, "event": "throttle", "value": 0.0})
-    client.call("inject_input", {"id": vehicle_id, "event": "brake", "value": 1.0})
-
-
-def release(client, vehicle_id: int) -> None:
-    client.call("inject_input", {"id": vehicle_id, "event": "brake", "value": 0.0})
-
-
-def hand_back(client, vehicle_id: int) -> None:
-    """Whatever happened, the game gets its car back."""
-    for event in ("throttle", "brake", "steering"):
-        try:
-            client.call("inject_input",
-                        {"id": vehicle_id, "event": event, "value": 0.0})
-        except MCPError:
-            pass
-    try:
-        client.call("set_ai", {"id": vehicle_id, "mode": "disabled"})
-    except MCPError:
-        pass
+# -- the journey ------------------------------------------------------------
 
 
 class Journey:
@@ -340,14 +264,13 @@ class Journey:
     happens -- so the position it reasons about is never more than a second old.
     """
 
-    def __init__(self, client, vehicle_id, source, destination, style, seed=0,
-                 accepted=None):
-        self.accepted = accepted
-        self.client = client
-        self.vehicle_id = vehicle_id
+    def __init__(self, ai: Ai, source, destination, style, seed=0,
+                 waypoint=None):
+        self.ai = ai
         self.source = source
         self.destination = destination
         self.style = style
+        self.waypoint = waypoint
         self.random = random.Random(seed)
         self.arrived = False
         self.stops = 0
@@ -361,16 +284,15 @@ class Journey:
         return now + self.random.uniform(*self.style.stop_every_s)
 
     def remaining_m(self) -> float | None:
-        if self.last_position is None:
+        if self.last_position is None or self.destination is None:
             return None
-        dx = self.destination["x"] - self.last_position[0]
-        dy = self.destination["y"] - self.last_position[1]
-        return math.hypot(dx, dy)
+        return math.hypot(self.destination["x"] - self.last_position[0],
+                          self.destination["y"] - self.last_position[1])
 
     def tick(self, rows: int, elapsed: float, total: float) -> None:
-        # The samples already drained carry the position; asking the game again
-        # would be a round trip for something we have.
-        latest = getattr(self.source, "last_sample", None)
+        # The drained samples carry the position; asking the game again would
+        # be a round trip for something already in hand.
+        latest = getattr(self.source, "last_sample", None) or {}
         if latest:
             self.last_position = (latest["x_m"], latest["y_m"])
 
@@ -382,30 +304,34 @@ class Journey:
         if self.stopped_until:
             if elapsed >= self.stopped_until:
                 self.stopped_until = 0.0
-                release(self.client, self.vehicle_id)
-                self.accepted = send_off(self.client, self.vehicle_id,
-                                         self.destination, self.style,
-                                         accepted=self.accepted)
+                self.send_off()
                 self.next_stop_at = self._schedule(elapsed)
         elif self.next_stop_at is not None and elapsed >= self.next_stop_at:
             self.stops += 1
             self.stopped_until = elapsed + self.random.uniform(*self.style.stop_for_s)
-            halt(self.client, self.vehicle_id)
+            self.ai.halt()
 
-        self._report(rows, elapsed, total, left)
+        self._report(rows, elapsed, total, left, latest)
 
-    def _report(self, rows, elapsed, total, left) -> None:
-        latest = getattr(self.source, "last_sample", None) or {}
+    def send_off(self) -> None:
+        """Set the style, then start it. At every leg, restarts included."""
+        self.ai.configure(self.style)
+        if self.waypoint:
+            self.ai.drive_to(self.waypoint)
+        else:
+            self.ai.roam()
+
+    def _report(self, rows, elapsed, total, left, latest) -> None:
         speed = float(latest.get("speed_mps") or 0.0)
         where = "stopped" if self.stopped_until else (
-            f"{left:6.0f} m to go" if left is not None else "driving")
+            f"{left:6.0f} m to go" if left is not None else "roaming")
         print(f"\r  {elapsed:5.0f}s / {total:.0f}s   {rows:7d} rows   "
               f"{speed:5.1f} m/s   {where}   {self.stops} stops",
               end="", flush=True)
 
 
 class WatchedSource(MCPTrajectorySource):
-    """A source that remembers its most recent sample, so the journey can see it."""
+    """A source that remembers its most recent sample, so the journey sees it."""
 
     last_sample: dict | None = None
 
@@ -421,11 +347,12 @@ class WatchedSource(MCPTrajectorySource):
 
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("style", nargs="?", choices=sorted(STYLES),
-                        help="how to drive")
+    parser.add_argument("style", nargs="?", choices=sorted(STYLES))
     parser.add_argument("--minutes", type=float, default=30.0,
                         help="give up after this long if the route is not done")
     parser.add_argument("--to", help="x,y,z instead of the route on the map")
+    parser.add_argument("--roam", action="store_true",
+                        help="cover the road network instead of going anywhere")
     parser.add_argument("--seed", type=int, default=0,
                         help="which stops happen where, reproducibly")
     parser.add_argument("--ambient", type=float, default=25.0,
@@ -433,21 +360,16 @@ def main(argv=None) -> int:
                              "in it, so this is an assumption the log records")
     parser.add_argument("--show-route", action="store_true",
                         help="print what the game says your route is, and stop")
-    parser.add_argument("--diagnose", action="store_true",
-                        help="find out why the car will not move, and stop")
     parser.add_argument("--endpoint", default=DEFAULT_ENDPOINT)
     args = parser.parse_args(argv)
 
-    if not args.style and not (args.show_route or args.diagnose):
-        parser.error("pick a style, or pass --show-route or --diagnose")
-    if args.diagnose and not args.style:
-        args.style = "economical"
+    if not args.style and not args.show_route:
+        parser.error("pick a style, or pass --show-route")
 
     client = MCPClient(args.endpoint)
     try:
         client.connect()
         status = client.call("get_status")
-        vehicle_id = client.call("get_player_vehicle_id")
     except MCPError as error:
         print(f"\n  {error}", file=sys.stderr)
         print("  In BeamNG: Options > Advanced > 'Enable MCP server'.",
@@ -458,11 +380,14 @@ def main(argv=None) -> int:
     level = str(status.get("level", "unknown"))
     vehicle = status.get("vehicle", {})
 
-    destination, how = resolve_destination(client, args)
+    if args.roam:
+        destination, how = None, {"how": "roaming"}
+    else:
+        destination, how = resolve_destination(client, args)
     if args.show_route:
         print(json.dumps(how, indent=2, sort_keys=True))
         return 0
-    if destination is None:
+    if destination is None and not args.roam:
         return explain_no_route(how)
 
     style = STYLES[args.style]
@@ -471,12 +396,11 @@ def main(argv=None) -> int:
         minutes=args.minutes, accessory_load_a=style.accessory_load_a,
         ambient_temp_c=args.ambient,
         vehicle_config=f"{vehicle.get('jbeam', '?')}/{vehicle.get('configKey', '')}",
-        route=f"route:{how.get('how', 'given')}", seed=args.seed,
+        route="roam" if args.roam else f"route:{how.get('how', 'given')}",
+        seed=args.seed,
     )
-    csv_path = RUNS / f"{time.strftime('%Y%m%d-%H%M%S')}_{style.name}_{spec.scenario_hash}.csv"
-
-    if args.diagnose:
-        return diagnose(client, vehicle_id, destination, STYLES[args.style])
+    csv_path = (RUNS / f"{time.strftime('%Y%m%d-%H%M%S')}_{style.name}"
+                       f"_{spec.scenario_hash}.csv")
 
     source = WatchedSource(client, interval_s=SAMPLE_INTERVAL_S)
     try:
@@ -487,36 +411,51 @@ def main(argv=None) -> int:
               file=sys.stderr)
         return 1
 
+    waypoint = None if destination is None else waypoint_near(client, destination)
+    if destination is not None and waypoint is None:
+        print("\n  No navgraph node near your destination -- the AI has nowhere "
+              "to be sent.", file=sys.stderr)
+        print("  Pick a destination on a road, or use --roam.", file=sys.stderr)
+        source.stop()
+        return 1
+
     print(f"  style     : {style.name} -- {style.why}")
-    print(f"  route     : from {how.get('how', 'given')}, to "
-          f"({destination['x']:.0f}, {destination['y']:.0f})")
+    if destination is None:
+        print("  route     : roaming the road network")
+    else:
+        print(f"  route     : from {how.get('how', 'given')}, to "
+              f"({destination['x']:.0f}, {destination['y']:.0f}) "
+              f"via node {waypoint}")
     print(f"  level     : {level}")
     print(f"  vehicle   : {vehicle.get('jbeam', '?')}  {source.mass_kg:.0f} kg")
     if style.stop_every_s:
         print(f"  stops     : every {style.stop_every_s[0]:.0f}-"
-              f"{style.stop_every_s[1]:.0f}s, for "
-              f"{style.stop_for_s[0]:.0f}-{style.stop_for_s[1]:.0f}s, "
-              f"engine running")
+              f"{style.stop_every_s[1]:.0f}s, for {style.stop_for_s[0]:.0f}-"
+              f"{style.stop_for_s[1]:.0f}s, engine running")
     print(f"  sampling  : {1 / SAMPLE_INTERVAL_S:.0f} Hz inside the vehicle VM")
     print(f"  log       : {csv_path}")
     print(f"  giving up : after {args.minutes:.0f} minutes\n")
 
-    journey = Journey(client, vehicle_id, source, destination, style, seed=args.seed)
+    ai = Ai(VehicleVM(client))
+    journey = Journey(ai, source, destination, style, seed=args.seed,
+                      waypoint=waypoint)
+
     beamng = {"backend": "mcp", "level": level, "endpoint": client.endpoint,
               "vehicle": vehicle.get("jbeam", "unknown"),
               "mass_kg": source.mass_kg, "destination": destination,
-              "route_from": how.get("how"), "style": style.name}
+              "waypoint": waypoint, "route_from": how.get("how"),
+              "style": style.name, "driver": "ai in the vehicle VM"}
 
     try:
-        journey.accepted = send_off(client, vehicle_id, destination, style)
-        print(f"  accepted  : drive_to{list(journey.accepted) or ' (pos only)'}\n")
+        journey.send_off()
+        confirm(ai)
         summary = collect_run(
             source, spec, csv_path, seconds=args.minutes * 60.0,
             beamng=beamng, on_progress=journey.tick,
             should_stop=lambda: journey.arrived,
         )
     finally:
-        hand_back(client, vehicle_id)
+        ai.release()
 
     print(f"\n\n  {'arrived' if journey.arrived else 'ran out of time'} "
           f"after {summary['duration_s']:.0f} s, {journey.stops} stops")
@@ -527,214 +466,14 @@ def main(argv=None) -> int:
     return 0
 
 
-#: The electrics worth seeing when a car will not move. Each one is a
-#: different reason, and they are indistinguishable from the outside.
-WHY_STUCK = ("parkingbrake", "ignitionLevel", "engineRunning", "rpm", "gear",
-             "throttle", "brake", "clutch", "wheelspeed", "fuel", "damage")
-
-
-def read_electrics(client, keys) -> dict:
-    """Read a few electrics, as the answer to this request and no other."""
-    code = ("return {" + ", ".join(f"{k} = electrics.values.{k}" for k in keys)
-            + "}")
-    state = vehicle_lua(client, code, default={})
-    return state if isinstance(state, dict) else {}
-
-
-#: How long to give each attempt before deciding it did nothing.
-SETTLE_S = 6.0
-#: Above this the car is unambiguously moving, not just settling on its springs.
-MOVING_MPS = 1.0
-
-
-def look(client, label: str, shots: list) -> None:
-    """Take a picture of whatever is going on.
-
-    Two rounds of reading numbers have not said why the car is stationary. A
-    screenshot answers questions the electrics cannot: whether the car is on a
-    road, on its roof, in the air, or behind a dialog nobody dismissed.
-    """
-    try:
-        path = client.call("screenshot", {"jpg": True})
-    except MCPError as error:
-        print(f"    (no screenshot: {error})")
-        return
-    if is_async_notice(path):
-        path = ask(client, "screenshot", {"jpg": True}) or path
-    shots.append((label, str(path)))
-    print(f"    picture: {path}")
-
-
-def show_the_target(client, destination: dict) -> None:
-    """Draw the destination in the world, so a picture shows what it is aiming at."""
-    try:
-        client.call("debug_draw", {
-            "id": "car_agent_target", "kind": "sphere", "pos": destination,
-            "radius": 4.0, "color": [1, 0.2, 0.2, 0.6],
-            "label": "destination", "ttl": 600,
-        })
-    except MCPError:
-        pass
-
-
-def where_is_it(client) -> dict:
-    """Position, and whether the ground under the car is drivable at all."""
-    out = {}
-    status = ask(client, "get_status")
-    if isinstance(status, dict):
-        out["pos"] = (status.get("vehicle") or {}).get("pos")
-        out["damage"] = (status.get("vehicle") or {}).get("damage")
-    ground = ask(client, "get_ground_at_point")
-    if isinstance(ground, dict):
-        out["drivability_under_car"] = ground.get("drivability")
-        out["surface_height"] = ground.get("surfaceHeight")
-    return out
-
-
-def speed_now(client) -> float:
-    return float(held_by(client).get("wheelspeed") or 0.0)
-
-
-def position_now(client) -> tuple[float, float] | None:
-    status = ask(client, "get_status")
-    position = ((status or {}).get("vehicle") or {}).get("pos") \
-        if isinstance(status, dict) else None
-    if not position:
-        return None
-    return float(position["x"]), float(position["y"])
-
-
-#: Metres of travel that settle it. A car rocking on its springs moves
-#: centimetres; a car driving moves tens of metres in six seconds.
-MOVED_M = 3.0
-
-
-def did_it_move(client, label: str, shots: list | None = None,
-                settle_s: float | None = None) -> bool:
-    """Wait, then say whether the car actually went anywhere.
-
-    Distance travelled, not a single speed sample: one reading taken at the
-    wrong instant -- mid gear change, or against a kerb -- says stationary
-    about a car that is driving.
-    """
-    before = position_now(client)
-    time.sleep(SETTLE_S if settle_s is None else settle_s)
-    after = position_now(client)
-    speed = speed_now(client)
-
-    if before is None or after is None:
-        travelled = float("nan")
-        moving = speed > MOVING_MPS
-    else:
-        travelled = math.hypot(after[0] - before[0], after[1] - before[1])
-        moving = travelled > MOVED_M or speed > MOVING_MPS
-
-    print(f"    {label:34} {travelled:7.1f} m   {speed:6.2f} m/s   "
-          f"{'MOVING' if moving else 'stationary'}")
-    if shots is not None:
-        look(client, label, shots)
-    return moving
-
-
-def diagnose(client, vehicle_id: int, destination: dict, style: Style) -> int:
-    """Find out what actually moves this car, by trying things in order.
-
-    Three explanations fit "the car does not move" and they are
-    indistinguishable from outside: something is holding it, `drive_to` was
-    refused, or the AI took an order it cannot route. Guessing between them has
-    cost two rounds already, so this runs the experiment instead.
-
-    `set_ai(mode='span')` is the control: it is the only thing in this project
-    that has ever demonstrably driven a car. If span moves it and `drive_to`
-    does not, the car is fine and the routing is the problem.
-    """
-    shots: list = []
-    try:
-        client.call("set_camera", {"name": "orbit"})
-    except MCPError:
-        pass
-    show_the_target(client, destination)
-
-    print("\n  WHERE IT IS")
-    for key, value in sorted(where_is_it(client).items()):
-        print(f"    {key:24} {value}")
-
-    print("\n  WHAT IS HOLDING IT")
-    for key, value in sorted(read_electrics(client, WHY_STUCK).items()):
-        print(f"    {key:16} {value}")
-
-    print("\n  LETTING IT GO")
-    freed = free_the_car(client, vehicle_id, report=lambda why: print(f"    {why}"))
-    print(f"    now: {json.dumps(held_by(client), sort_keys=True)}")
-    if freed is None:
-        print("    Nothing released the parking brake.")
-
-    print("\n  WHAT MOVES IT")
-    print(f"    {'attempt':34} {'moved':>7}   {'speed':>6}")
-
-    # The control. Roaming needs no destination and no route, so if this does
-    # not move the car then nothing about the route is to blame.
-    client.call("set_ai", {"id": vehicle_id, "mode": "span",
-                           "aggression": style.aggression, "avoidCars": True})
-    span_moved = did_it_move(client, "set_ai span (the known-good one)", shots)
-    client.call("set_ai", {"id": vehicle_id, "mode": "disabled"})
-    time.sleep(1.0)
-
-    # drive_to with no set_ai in front of it.
-    reply = client.call("drive_to", {
-        "id": vehicle_id, "pos": destination,
-        "aggression": style.aggression, "avoidCars": True,
-    })
-    print(f"    drive_to said: {str(reply)[:100]}")
-    alone_moved = did_it_move(client, "drive_to on its own", shots)
-    client.call("set_ai", {"id": vehicle_id, "mode": "disabled"})
-    time.sleep(1.0)
-
-    # drive_to after putting the AI in manual, which is what this script does.
-    client.call("set_ai", {"id": vehicle_id, "mode": "manual",
-                           "aggression": style.aggression, "avoidCars": True})
-    client.call("drive_to", {
-        "id": vehicle_id, "pos": destination,
-        "aggression": style.aggression, "avoidCars": True,
-        "driveInLane": style.drive_in_lane, "routeSpeedMode": style.speed_mode,
-    })
-    manual_moved = did_it_move(client, "set_ai manual, then drive_to", shots)
-
-    print("\n  WHAT THE AI THINKS IT IS DOING")
-    state = ask(client, "get_ai", {"id": vehicle_id})
-    print(f"    {json.dumps(state, sort_keys=True) if isinstance(state, dict) else state}")
-
-    print("\n  WHETHER THE ROUTE IS EVEN REACHABLE")
-    ground = ask(client, "get_ground_at_point", {"pos": destination})
-    print(f"    under the destination: {ground}")
-    navgraph = ask(client, "get_navgraph", {"near": destination, "radius": 50})
-    print(f"    navgraph near it: {str(navgraph)[:200]}")
-
-    hand_back(client, vehicle_id)
-    try:
-        client.call("debug_clear", {"id": "car_agent_target"})
-    except MCPError:
-        pass
-
-    if shots:
-        print("\n  PICTURES -- send these back, they say what numbers cannot")
-        for label, path in shots:
-            print(f"    {label:34} {path}")
-
-    print("\n  VERDICT")
-    if not span_moved and not alone_moved and not manual_moved:
-        print("    Nothing moved it. The car itself is stuck, not the routing.")
-        print("    Try: recover the vehicle in game (Insert), or spawn a fresh")
-        print("    one, then run this again.")
-    elif span_moved and not (alone_moved or manual_moved):
-        print("    The car drives, but not to your destination. The routing is")
-        print("    the problem, not the car -- see the navgraph line above.")
-    elif alone_moved and not manual_moved:
-        print("    drive_to works on its own. Putting the AI in manual first")
-        print("    is what breaks it, so that call goes.")
-    else:
-        print("    drive_to works. Run:  py drive_route.py aggressive")
-    return 0
+def confirm(ai: Ai) -> None:
+    """Say whether the AI took the order, before committing thirty minutes."""
+    time.sleep(2.0)
+    state = ai.state()
+    driving = ai.is_driving()
+    print(f"  ai        : mode {state.get('mode', '?')}, "
+          f"aggression {state.get('aggression', '?')}, "
+          f"{'driving' if driving else 'not driving yet'}\n")
 
 
 def resolve_destination(client, args) -> tuple[dict | None, dict]:
@@ -750,11 +489,9 @@ def resolve_destination(client, args) -> tuple[dict | None, dict]:
 def explain_no_route(how: dict) -> int:
     print("\n  No route found. Set a destination in the map first -- the blue "
           "line on the road is the route.", file=sys.stderr)
-    print("  If you have set one and this still says no, the field name "
-          "differs in this build. What the game does have:", file=sys.stderr)
+    print("  Or drive without one:  py drive_route.py aggressive --roam\n",
+          file=sys.stderr)
     print(json.dumps(how, indent=2, sort_keys=True), file=sys.stderr)
-    print("\n  Send that back, or drive with an explicit target:  "
-          "--to x,y,z", file=sys.stderr)
     return 1
 
 

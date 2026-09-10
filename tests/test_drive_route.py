@@ -2,7 +2,7 @@
 
 Everything here runs against a fake MCP client. The game is on someone else's
 Windows laptop, and a driver that can only be tested there is a driver that
-stops being tested.
+stops being tested -- which is how three wrong fixes shipped in a row.
 """
 
 import json
@@ -10,8 +10,9 @@ import json
 import pytest
 
 import drive_route
+from collect.vm import VehicleVM
+from drive_route import Ai, Journey, STYLES, find_destination, resolve_destination
 from sim.mcp_client import MCPError
-from drive_route import STYLES, Journey, Style, find_destination, resolve_destination
 
 
 class FakeClient:
@@ -41,21 +42,23 @@ class FakeClient:
         if "tag = '" not in code:
             return value
         tag = code.split("tag = '")[1].split("'")[0]
-        if isinstance(value, dict) and set(value) == {"73126"}:
-            value = json.loads(value["73126"])
         return {"73126": json.dumps({"tag": tag, "ok": True, "value": value})}
 
     def tools(self, name):
         return [args for tool, args in self.calls if tool == name]
 
-    def vm_codes(self):
-        """The Lua bodies asked for, with the tagging wrapper stripped."""
+    def lua(self):
+        """The Lua asked for, one string per vehicle-VM call."""
         return [args["code"] for tool, args in self.calls
                 if tool == "run_lua_vehicle"]
 
+    def commanded(self):
+        """Just the Lua we wrote, with the transport's drains filtered out."""
+        return [code for code in self.lua() if "return 0" not in code]
 
-def route_reply(how="groundMarkers.targetPos", x=100.0, y=200.0, z=5.0):
-    return json.dumps({"how": how, "pos": {"x": x, "y": y, "z": z}})
+
+def an_ai(client=None):
+    return Ai(VehicleVM(client or FakeClient(), wait_s=0.0))
 
 
 # -- styles -----------------------------------------------------------------
@@ -93,14 +96,110 @@ def test_every_aggression_is_inside_the_range_a_scenario_accepts():
         assert low <= style.aggression <= high, style.name
 
 
+# -- the AI, commanded inside the vehicle VM --------------------------------
+
+
+def test_the_ai_is_commanded_in_the_vehicle_vm_not_through_set_ai():
+    # Measured, not preferred: drive_to reported an accepted route to a real
+    # navgraph node and the car sat still; ai.setMode('span') in the vehicle's
+    # own Lua covered 32 m in six seconds.
+    client = FakeClient()
+    an_ai(client).roam()
+    assert client.tools("set_ai") == []
+    assert client.tools("drive_to") == []
+    assert any("ai.setMode('span')" in code for code in client.commanded())
+
+
+def test_nothing_injects_an_input():
+    # The AI takes the pedals itself and releases the parking brake on its way.
+    client = FakeClient()
+    ai = an_ai(client)
+    ai.configure(STYLES["aggressive"])
+    ai.roam()
+    ai.halt()
+    ai.release()
+    assert client.tools("inject_input") == []
+
+
+def test_configure_sets_the_style_the_ai_will_drive_with():
+    client = FakeClient()
+    an_ai(client).configure(STYLES["aggressive"])
+    commanded = " ".join(client.commanded())
+    assert "ai.setAggression(1.0)" in commanded
+    assert "ai.setSpeedMode('off')" in commanded
+    assert "ai.driveInLane('on')" in commanded
+
+
+def test_driving_to_a_waypoint_sets_the_target_before_the_mode():
+    # Manual mode with no target is a car told to drive somewhere and not told
+    # where.
+    client = FakeClient()
+    an_ai(client).drive_to("DR835_8")
+    commanded = client.commanded()
+    target = next(i for i, c in enumerate(commanded) if "setTarget" in c)
+    mode = next(i for i, c in enumerate(commanded) if "setMode('manual')" in c)
+    assert target < mode
+    assert "ai.setTarget('DR835_8')" in commanded[target]
+
+
+def test_halting_leaves_the_engine_running():
+    # Idling is the pathway being sampled. Switching off would sample nothing.
+    client = FakeClient()
+    an_ai(client).halt()
+    commanded = " ".join(client.commanded())
+    assert "ai.setMode('stop')" in commanded
+    assert "ignition" not in commanded
+
+
+def test_halting_falls_back_when_stop_mode_is_refused():
+    class NoStopMode(FakeClient):
+        def call(self, name, arguments=None):
+            code = (arguments or {}).get("code", "")
+            if "setMode('stop')" in code:
+                tag = code.split("tag = '")[1].split("'")[0]
+                self.calls.append((name, arguments or {}))
+                return {"73126": json.dumps(
+                    {"tag": tag, "ok": False, "error": "unknown mode"})}
+            return super().call(name, arguments)
+
+    client = NoStopMode()
+    an_ai(client).halt()
+    assert any("setMode('disabled')" in code for code in client.commanded())
+
+
+def test_releasing_hands_the_car_back():
+    client = FakeClient()
+    an_ai(client).release()
+    assert any("ai.setMode('disabled')" in code for code in client.commanded())
+
+
+def test_the_ai_can_be_asked_whether_it_is_actually_driving():
+    client = FakeClient({"run_lua_vehicle": {"driving": True}})
+    assert an_ai(client).is_driving() is True
+
+
+def test_a_vm_that_will_not_answer_leaves_driving_unknown_rather_than_false():
+    class Silent(FakeClient):
+        def call(self, name, arguments=None):
+            self.calls.append((name, arguments or {}))
+            return "queued in vehicle VM(s); call again in a moment"
+
+    ai = Ai(VehicleVM(Silent(), attempts=2, wait_s=0.0))
+    assert ai.is_driving() is None
+
+
 # -- finding the route ------------------------------------------------------
+
+
+def route_reply(how="groundMarkers.getTargetPos", x=100.0, y=200.0, z=5.0):
+    return json.dumps({"how": how, "pos": {"x": x, "y": y, "z": z}})
 
 
 def test_it_reads_the_destination_the_map_route_ends_at():
     client = FakeClient({"run_lua": route_reply()})
     destination, how = find_destination(client)
     assert destination == {"x": 100.0, "y": 200.0, "z": 5.0}
-    assert how["how"] == "groundMarkers.targetPos"
+    assert how["how"] == "groundMarkers.getTargetPos"
 
 
 def test_an_already_parsed_reply_is_accepted():
@@ -147,264 +246,50 @@ def test_a_malformed_explicit_target_is_refused():
     assert destination is None and how["how"] == "bad --to"
 
 
-# -- sending the car off ----------------------------------------------------
+# -- the waypoint the AI can actually be sent to ----------------------------
 
 
-def test_send_off_hands_the_destination_to_the_games_ai():
-    client = FakeClient()
-    drive_route.send_off(client, 7, {"x": 1.0, "y": 2.0, "z": 3.0},
-                         STYLES["aggressive"])
-    drive_to = client.tools("drive_to")[0]
-    assert drive_to["pos"] == {"x": 1.0, "y": 2.0, "z": 3.0}
-    assert drive_to["aggression"] == STYLES["aggressive"].aggression
-    assert drive_to["id"] == 7
+def test_the_waypoint_comes_from_the_navgraph_not_from_us():
+    # setTarget takes a name, and the game holds a nonexistent one without
+    # complaining.
+    client = FakeClient({"get_navgraph": {
+        "closestRoad": {"from": "DR835_8", "to": "DR835_81", "dist": 0.77}}})
+    assert drive_route.waypoint_near(client, {"x": 1.0, "y": 2.0}) == "DR835_8"
 
 
-def held(parkingbrake=1, brake=0.3, wheelspeed=0.0):
-    """The value a vehicle-VM read of what is holding the car returns."""
-    return {"parkingbrake": parkingbrake, "brake": brake, "throttle": 0,
-            "gear": 0, "rpm": 800.0, "wheelspeed": wheelspeed}
+def test_a_destination_with_no_navgraph_near_it_has_no_waypoint():
+    client = FakeClient({"get_navgraph": {"nodeCount": 0}})
+    assert drive_route.waypoint_near(client, {"x": 1.0, "y": 2.0}) is None
 
 
-def holding(parkingbrake=1, brake=0.3, wheelspeed=0.0):
-    return held(parkingbrake, brake, wheelspeed)
-
-
-def test_the_holding_query_fetches_every_field_read_back_from_it():
-    # speed_now read wheelspeed out of a query that did not ask for it, so
-    # every attempt measured zero and a driving car was reported stuck.
-    for field in ("parkingbrake", "brake", "throttle", "gearIndex",
-                  "wheelspeed", "rpm"):
-        assert field in drive_route.HOLDING_LUA, field
-
-
-def test_speed_now_reads_the_speed():
-    client = FakeClient({"run_lua_vehicle": held(wheelspeed=17.5)})
-    assert drive_route.speed_now(client) == 17.5
-
-
-def test_a_car_that_covered_ground_is_moving():
-    positions = [{"vehicle": {"pos": {"x": 0.0, "y": 0.0}}},
-                 {"vehicle": {"pos": {"x": 100.0, "y": 0.0}}}]
-    client = FakeClient({"get_status": lambda _a: positions.pop(0),
-                         "run_lua_vehicle": held(wheelspeed=0.0)})
-    assert drive_route.did_it_move(client, "test", settle_s=0.0) is True
-
-
-def test_a_car_that_stayed_put_is_not_moving():
-    still = {"vehicle": {"pos": {"x": 0.0, "y": 0.0}}}
-    client = FakeClient({"get_status": still,
-                         "run_lua_vehicle": held(wheelspeed=0.0)})
-    assert drive_route.did_it_move(client, "test", settle_s=0.0) is False
-
-
-def test_a_rocking_car_is_not_mistaken_for_a_driving_one():
-    positions = [{"vehicle": {"pos": {"x": 0.0, "y": 0.0}}},
-                 {"vehicle": {"pos": {"x": 0.4, "y": 0.1}}}]
-    client = FakeClient({"get_status": lambda _a: positions.pop(0),
-                         "run_lua_vehicle": held(wheelspeed=0.0)})
-    assert drive_route.did_it_move(client, "test", settle_s=0.0) is False
-
-
-def test_speed_still_settles_it_when_position_is_unavailable():
-    client = FakeClient({"get_status": None,
-                         "run_lua_vehicle": holding(wheelspeed=17.5)})
-    assert drive_route.did_it_move(client, "test", settle_s=0.0) is True
-
-
-def test_a_free_car_is_left_alone():
-    client = FakeClient({"run_lua_vehicle": holding(parkingbrake=0)})
-    assert drive_route.free_the_car(client, 7) == "already free"
-    # One read, plus whatever draining the tagged transport needed.
-    assert not any("input.event" in code for code in client.vm_codes())
-
-
-def test_the_parking_brake_goes_through_the_vehicles_own_input_system():
-    # `inject_input` sets an input for a moment and the vehicle reasserts
-    # itself, which is why the brake survived being told to release.
-    replies = [held(1), True, held(0)]
-    client = FakeClient({"run_lua_vehicle": lambda _a: replies.pop(0)})
-    assert drive_route.free_the_car(client, 7) == "input.event, FILTER_DIRECT"
-    assert any("input.event('parkingbrake', 0, FILTER_DIRECT)" in code
-               for code in client.vm_codes())
-
-
-def test_it_moves_on_to_the_next_release_when_one_does_not_take():
-    # still held after the first, free after the second
-    replies = [held(1), True, held(1), True, held(0)]
-    client = FakeClient({"run_lua_vehicle": lambda _a: replies.pop(0)})
-    assert drive_route.free_the_car(client, 7) == "input.event, default filter"
-
-
-def test_it_reports_when_nothing_lets_the_car_go():
-    client = FakeClient({"run_lua_vehicle": holding(1)})
-    said = []
-    assert drive_route.free_the_car(client, 7, report=said.append) is None
-    assert "could not release" in said[-1]
-
-
-def test_every_release_route_is_tried_before_giving_up():
-    client = FakeClient({"run_lua_vehicle": holding(1)})
-    drive_route.free_the_car(client, 7)
-    for _name, action in drive_route.RELEASES:
-        assert any(action in code for code in client.vm_codes())
-
-
-def test_an_async_notice_is_not_mistaken_for_an_answer():
-    # Two wordings exist and checking for only one reads a notice as a reply.
-    from collect.decode import is_async_notice
-
-    assert is_async_notice("queued in vehicle VM(s); call again in a moment")
-    assert is_async_notice("ai state requested (async); call again in a moment")
-    assert not is_async_notice('{"parkingbrake": 0}')
-
-
-def test_a_picture_is_taken_and_its_path_kept():
-    client = FakeClient({"screenshot": "C:/BeamNG/screenshots/shot.jpg"})
-    shots = []
-    drive_route.look(client, "after span", shots)
-    assert shots == [("after span", "C:/BeamNG/screenshots/shot.jpg")]
-
-
-def test_a_screenshot_that_is_not_ready_yet_is_waited_for():
-    replies = ["screenshot requested (async); call again in a moment",
-               "C:/BeamNG/screenshots/shot.jpg"]
-    client = FakeClient({"screenshot": lambda _a: replies.pop(0)})
-    shots = []
-    drive_route.look(client, "after span", shots)
-    assert shots[0][1].endswith("shot.jpg")
-
-
-def test_a_failed_screenshot_does_not_take_the_diagnosis_with_it():
-    class Broken(FakeClient):
-        def call(self, name, arguments=None):
-            if name == "screenshot":
-                raise MCPError("no screenshot on this build")
-            return super().call(name, arguments)
-
-    shots = []
-    drive_route.look(Broken(), "after span", shots)
-    assert shots == []
-
-
-def test_the_destination_is_drawn_so_a_picture_shows_the_target():
-    client = FakeClient()
-    drive_route.show_the_target(client, {"x": 1.0, "y": 2.0, "z": 3.0})
-    drawn = client.tools("debug_draw")[0]
-    assert drawn["pos"] == {"x": 1.0, "y": 2.0, "z": 3.0}
-
-
-def test_where_it_is_reports_whether_the_ground_is_drivable():
-    client = FakeClient({
-        "get_status": {"vehicle": {"pos": {"x": 1.0}, "damage": 0}},
-        "get_ground_at_point": {"drivability": 0.0, "surfaceHeight": 100.0},
-    })
-    where = drive_route.where_is_it(client)
-    assert where["drivability_under_car"] == 0.0
-    assert where["damage"] == 0
-
-
-def test_ask_waits_the_notice_out():
-    replies = ["ai state requested (async); call again in a moment",
-               {"mode": "manual", "aggression": 1.0}]
-    client = FakeClient({"get_ai": lambda _a: replies.pop(0)})
-    assert drive_route.ask(client, "get_ai", wait_s=0.0)["mode"] == "manual"
-
-
-def test_ask_gives_up_rather_than_waiting_forever():
-    client = FakeClient({"get_ai": "requested (async); call again in a moment"})
-    assert drive_route.ask(client, "get_ai", attempts=3, wait_s=0.0) is None
-    assert len(client.tools("get_ai")) == 3
-
-
-def test_send_off_asks_for_everything_first():
-    client = FakeClient()
-    drive_route.send_off(client, 7, {"x": 0.0, "y": 0.0, "z": 0.0},
-                         STYLES["aggressive"])
-    assert set(client.tools("drive_to")[0]) == {
-        "id", "pos", "aggression", "avoidCars", "driveInLane", "routeSpeedMode"}
-
-
-def test_send_off_drops_arguments_until_the_game_takes_one():
-    # A refused drive_to does not raise. It comes back as text and the car
-    # never sets off.
-    def fussy(arguments):
-        if "routeSpeedMode" in arguments:
-            return "drive_to failed: unknown argument routeSpeedMode"
-        if "driveInLane" in arguments:
-            return "error: bad argument driveInLane"
-        return {}
-
-    client = FakeClient({"drive_to": fussy})
-    accepted = drive_route.send_off(client, 7, {"x": 0.0, "y": 0.0, "z": 0.0},
-                                    STYLES["aggressive"])
-    assert accepted == ("aggression", "avoidCars")
-    assert len(client.tools("drive_to")) == 3
-
-
-def test_send_off_raises_when_nothing_is_accepted_and_says_what_was_tried():
-    client = FakeClient({"drive_to": "drive_to failed: no navgraph"})
-    with pytest.raises(RuntimeError, match="would not accept"):
-        drive_route.send_off(client, 7, {"x": 0.0, "y": 0.0, "z": 0.0},
-                             STYLES["economical"])
-
-
-def test_send_off_reuses_a_shape_that_already_worked():
-    client = FakeClient()
-    drive_route.send_off(client, 7, {"x": 0.0, "y": 0.0, "z": 0.0},
-                         STYLES["economical"], accepted=("aggression",))
-    assert set(client.tools("drive_to")[0]) == {"id", "pos", "aggression"}
-
-
-@pytest.mark.parametrize("reply", [
-    "drive_to failed", "error: nil value", "unknown argument",
-    "invalid pos", "bad argument #2",
-])
-def test_a_refusal_is_recognised_however_it_is_worded(reply):
-    assert drive_route.refused(reply) is True
-
-
-@pytest.mark.parametrize("reply", [
-    {}, "ok", "route set", 1, None,
-    # What BeamNG actually answers a good drive_to with.
-    "vehicle 132025 driving to node DR835_8 (nearest to 553.6, -892.3, 153.9)",
-])
-def test_an_acceptance_is_not_mistaken_for_a_refusal(reply):
-    assert drive_route.refused(reply) is False
-
-
-def test_send_off_puts_the_ai_in_manual_so_it_follows_the_route():
-    client = FakeClient()
-    drive_route.send_off(client, 7, {"x": 0.0, "y": 0.0, "z": 0.0},
-                         STYLES["economical"])
-    assert client.tools("set_ai")[0]["mode"] == "manual"
-
-
-def test_handing_back_disables_the_ai_and_releases_the_pedals():
-    client = FakeClient()
-    drive_route.hand_back(client, 7)
-    assert client.tools("set_ai")[-1]["mode"] == "disabled"
-    events = {args["event"] for args in client.tools("inject_input")}
-    assert events == {"throttle", "brake", "steering"}
+def test_the_navgraph_is_searched_around_the_destination():
+    client = FakeClient({"get_navgraph": {"closestRoad": {"from": "A"}}})
+    drive_route.waypoint_near(client, {"x": 5.0, "y": 6.0})
+    assert client.tools("get_navgraph")[0]["near"] == {"x": 5.0, "y": 6.0}
 
 
 # -- the journey ------------------------------------------------------------
 
 
 class Source:
+    interval_s = 0.01
+
     def __init__(self, x=0.0, y=0.0):
-        self.last_sample = {"x_m": x, "y_m": y}
+        self.last_sample = {"x_m": x, "y_m": y, "speed_mps": 0.0}
 
     def at(self, x, y):
-        self.last_sample = {"x_m": x, "y_m": y}
+        self.last_sample = {"x_m": x, "y_m": y, "speed_mps": 20.0}
 
 
-def a_journey(style="economical", destination=None, source=None, client=None):
-    return Journey(
-        client or FakeClient(), 7, source or Source(),
-        destination or {"x": 1000.0, "y": 0.0, "z": 0.0},
-        STYLES[style], seed=0,
-    )
+#: `None` is a meaningful destination -- it means roaming -- so the default
+#: needs a value that is not None.
+SOMEWHERE = {"x": 1000.0, "y": 0.0}
+
+
+def a_journey(style="economical", destination=SOMEWHERE, source=None,
+              client=None, waypoint="DR835_8"):
+    return Journey(an_ai(client), source or Source(), destination,
+                   STYLES[style], seed=0, waypoint=waypoint)
 
 
 def test_it_is_not_arrived_at_the_start():
@@ -437,32 +322,56 @@ def test_a_car_still_far_away_has_not_arrived():
     assert journey.arrived is False
 
 
-def test_a_style_without_stops_never_stops():
+def test_roaming_never_arrives_because_there_is_nowhere_to_arrive():
+    journey = a_journey(destination=None, waypoint=None)
+    journey.source.at(1000.0, 0.0)
+    journey.tick(0, 10.0, 600.0)
+    assert journey.arrived is False
+
+
+def test_sending_off_with_a_waypoint_drives_to_it():
     client = FakeClient()
-    journey = a_journey(style="aggressive", client=client)
+    a_journey(client=client).send_off()
+    assert any("ai.setTarget('DR835_8')" in code for code in client.commanded())
+
+
+def test_sending_off_without_a_waypoint_roams():
+    client = FakeClient()
+    a_journey(client=client, waypoint=None, destination=None).send_off()
+    assert any("ai.setMode('span')" in code for code in client.commanded())
+
+
+def test_the_style_is_applied_before_the_car_is_started():
+    client = FakeClient()
+    a_journey(style="aggressive", client=client).send_off()
+    commanded = client.commanded()
+    aggression = next(i for i, c in enumerate(commanded) if "setAggression" in c)
+    started = next(i for i, c in enumerate(commanded) if "setMode('manual')" in c)
+    assert aggression < started
+
+
+def test_a_style_without_stops_never_stops():
+    journey = a_journey(style="aggressive")
     for second in range(600):
         journey.tick(0, float(second), 600.0)
     assert journey.stops == 0
 
 
 def test_the_stops_style_does_stop():
-    client = FakeClient()
-    journey = a_journey(style="stops", client=client)
+    journey = a_journey(style="stops")
     for second in range(600):
         journey.tick(0, float(second), 600.0)
     assert journey.stops > 1
 
 
-def test_a_stop_brakes_and_disengages_the_ai():
+def test_a_stop_halts_the_ai():
     client = FakeClient()
     journey = a_journey(style="stops", client=client)
     for second in range(300):
         journey.tick(0, float(second), 600.0)
         if journey.stops:
             break
-    assert any(args.get("event") == "brake" and args.get("value") == 1.0
-               for args in client.tools("inject_input"))
-    assert client.tools("set_ai")[-1]["mode"] == "disabled"
+    assert any("setMode('stop')" in code for code in client.commanded())
 
 
 def test_a_stop_ends_and_the_car_is_sent_off_again():
@@ -470,8 +379,8 @@ def test_a_stop_ends_and_the_car_is_sent_off_again():
     journey = a_journey(style="stops", client=client)
     for second in range(600):
         journey.tick(0, float(second), 600.0)
-    # Every stop but possibly the last is followed by a fresh drive_to.
-    assert len(client.tools("drive_to")) >= journey.stops - 1
+    restarts = sum("setMode('manual')" in code for code in client.commanded())
+    assert restarts >= journey.stops - 1
 
 
 def test_the_same_seed_gives_the_same_stops():
@@ -490,9 +399,8 @@ def test_the_same_seed_gives_the_same_stops():
 
 def test_a_different_seed_gives_different_stops():
     def when(seed):
-        journey = Journey(FakeClient(), 7, Source(),
-                          {"x": 1000.0, "y": 0.0, "z": 0.0},
-                          STYLES["stops"], seed=seed)
+        journey = Journey(an_ai(), Source(), {"x": 1000.0, "y": 0.0},
+                          STYLES["stops"], seed=seed, waypoint="DR835_8")
         moments = []
         for second in range(600):
             before = journey.stops
@@ -517,3 +425,28 @@ def test_no_style_reaches_arrival_without_moving(style):
     for second in range(120):
         journey.tick(0, float(second), 600.0)
     assert journey.arrived is False
+
+
+# -- waiting out the async notice -------------------------------------------
+
+
+def test_ask_waits_the_notice_out():
+    replies = ["ai state requested (async); call again in a moment",
+               {"mode": "manual", "aggression": 1.0}]
+    client = FakeClient({"get_ai": lambda _a: replies.pop(0)})
+    assert drive_route.ask(client, "get_ai", wait_s=0.0)["mode"] == "manual"
+
+
+def test_ask_gives_up_rather_than_waiting_forever():
+    client = FakeClient({"get_ai": "requested (async); call again in a moment"})
+    assert drive_route.ask(client, "get_ai", attempts=3, wait_s=0.0) is None
+    assert len(client.tools("get_ai")) == 3
+
+
+def test_an_mcp_failure_is_reported_rather_than_retried_to_no_end():
+    class Broken(FakeClient):
+        def call(self, name, arguments=None):
+            self.calls.append((name, arguments or {}))
+            raise MCPError("the server went away")
+
+    assert "error" in drive_route.ask(Broken(), "get_ai", wait_s=0.0)
