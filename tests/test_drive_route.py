@@ -450,3 +450,149 @@ def test_an_mcp_failure_is_reported_rather_than_retried_to_no_end():
             raise MCPError("the server went away")
 
     assert "error" in drive_route.ask(Broken(), "get_ai", wait_s=0.0)
+
+
+# -- an explicit waypoint path ----------------------------------------------
+#
+# This is BeamNGpy's `vehicle.ai.drive_using_waypoints`, which is a wrapper
+# over one vehicle-VM Lua call -- so it works here without a .tech licence.
+
+
+def test_driving_a_path_calls_driveusingpath():
+    client = FakeClient()
+    an_ai(client).drive_path(["hr_start", "quickrace_wp1", "hr_start"],
+                             STYLES["economical"])
+    assert any("ai.driveUsingPath" in code for code in client.commanded())
+
+
+def test_the_waypoints_keep_the_order_they_were_given():
+    # A path whose nodes are reordered is a different road.
+    client = FakeClient()
+    an_ai(client).drive_path(["a", "b", "c"], STYLES["economical"])
+    lua = " ".join(client.commanded())
+    assert "wpTargetList = {'a', 'b', 'c'}" in lua
+
+
+def test_a_route_speed_is_held_rather_than_treated_as_a_limit():
+    client = FakeClient()
+    an_ai(client).drive_path(["a", "b"], STYLES["economical"], route_speed=27.8)
+    lua = " ".join(client.commanded())
+    assert "routeSpeed = 27.8" in lua
+    assert "routeSpeedMode = 'set'" in lua
+
+
+def test_a_path_without_a_route_speed_keeps_the_styles_speed_mode():
+    client = FakeClient()
+    an_ai(client).drive_path(["a", "b"], STYLES["aggressive"])
+    assert "routeSpeedMode = 'off'" in " ".join(client.commanded())
+
+
+def test_the_ai_wants_on_off_strings_where_beamngpy_takes_booleans():
+    # drive_in_lane=False in BeamNGpy is driveInLane = 'off' in the Lua.
+    client = FakeClient()
+    an_ai(client).drive_path(["a", "b"], STYLES["aggressive"])
+    lua = " ".join(client.commanded())
+    assert "driveInLane = 'on'" in lua
+    assert "avoidCars = 'on'" in lua
+    assert "true" not in lua.split("driveUsingPath")[1].split("}")[0]
+
+
+def test_the_style_reaches_the_ai_in_the_same_call_as_the_path():
+    # setAggression after the path starts arrives after the car has left.
+    client = FakeClient()
+    an_ai(client).drive_path(["a", "b"], STYLES["aggressive"])
+    assert "aggression = 1.0" in " ".join(client.commanded())
+
+
+def test_laps_default_to_one_and_are_passed_through():
+    client = FakeClient()
+    an_ai(client).drive_path(["a", "b"], STYLES["economical"])
+    assert "noOfLaps = 1" in " ".join(client.commanded())
+    client = FakeClient()
+    an_ai(client).drive_path(["a", "b"], STYLES["economical"], laps=3)
+    assert "noOfLaps = 3" in " ".join(client.commanded())
+
+
+def test_a_path_needs_somewhere_to_go():
+    with pytest.raises(ValueError):
+        an_ai().drive_path(["only_one"], STYLES["economical"])
+
+
+def test_a_waypoint_name_that_is_not_one_is_refused():
+    # These come out of a file and go into a Lua string literal.
+    with pytest.raises(ValueError):
+        an_ai().drive_path(["a", "b' ; obj:queueGameEngineLua('x') --"],
+                           STYLES["economical"])
+
+
+# -- reading a path off the command line ------------------------------------
+
+
+def test_a_path_can_be_given_as_a_comma_separated_list():
+    assert drive_route.load_path("hr_start, quickrace_wp1 ,hr_start") == [
+        "hr_start", "quickrace_wp1", "hr_start"]
+
+
+def test_a_path_can_be_given_as_a_json_file(tmp_path):
+    route = tmp_path / "hirochi.json"
+    route.write_text(json.dumps(["hr_start", "quickrace_wp1"]))
+    assert drive_route.load_path(str(route)) == ["hr_start", "quickrace_wp1"]
+
+
+def test_a_json_route_may_name_its_waypoints(tmp_path):
+    route = tmp_path / "hirochi.json"
+    route.write_text(json.dumps({"level": "hirochi_raceway",
+                                 "waypoints": ["hr_start", "quickrace_wp1"]}))
+    assert drive_route.load_path(str(route)) == ["hr_start", "quickrace_wp1"]
+
+
+# -- a journey along a path -------------------------------------------------
+
+
+def test_a_journey_with_a_path_drives_the_path_not_the_destination():
+    client = FakeClient()
+    ai = an_ai(client)
+    journey = Journey(ai, _NoSamples(), None, STYLES["economical"],
+                      path=["a", "b"])
+    journey.send_off()
+    lua = " ".join(client.commanded())
+    assert "driveUsingPath" in lua
+    assert "setMode('span')" not in lua
+
+
+def test_a_path_run_ends_when_the_ai_stops_driving():
+    # Otherwise every path run waits out the whole timer after finishing.
+    client = FakeClient({"run_lua_vehicle": {"driving": False}})
+    journey = Journey(an_ai(client), _NoSamples(), None, STYLES["economical"],
+                      path=["a", "b"])
+    journey.moved = True
+    for _ in range(drive_route.STILL_TICKS + 1):
+        journey.tick(0, 1.0, 100.0)
+    assert journey.arrived
+
+
+def test_a_path_run_does_not_end_while_the_ai_is_still_driving():
+    client = FakeClient({"run_lua_vehicle": {"driving": True}})
+    journey = Journey(an_ai(client), _NoSamples(), None, STYLES["economical"],
+                      path=["a", "b"])
+    journey.moved = True
+    for _ in range(drive_route.STILL_TICKS + 1):
+        journey.tick(0, 1.0, 100.0)
+    assert not journey.arrived
+
+
+def test_a_scheduled_stop_is_not_mistaken_for_the_end_of_the_path():
+    # The 'stops' style halts on purpose. That is not arrival.
+    client = FakeClient({"run_lua_vehicle": {"driving": False}})
+    journey = Journey(an_ai(client), _NoSamples(), None, STYLES["stops"],
+                      path=["a", "b"])
+    journey.moved = True
+    journey.stopped_until = 999.0
+    for _ in range(drive_route.STILL_TICKS + 1):
+        journey.tick(0, 1.0, 100.0)
+    assert not journey.arrived
+
+
+class _NoSamples:
+    """A source that has produced nothing yet."""
+    last_sample = None

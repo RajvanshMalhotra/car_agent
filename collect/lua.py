@@ -30,8 +30,25 @@ def install_source(interval_s: float) -> str:
     """Lua that installs the sampler, self-tests it, and starts it."""
     captures = ",\n    ".join(c.lua for c in MEASURED)
     return f"""
+-- `onPhysicsStep` is already a global in the vehicle VM -- it is in the module
+-- dump -- so defining one replaces whatever was there. That is what stopped
+-- the AI driving: the car drove whenever the sampler was absent and never
+-- when it was installed. Keep the original and call it first.
+local previousHook
+do
+  local old = _G.{STATE_GLOBAL}
+  if old then
+    -- A re-install. Chaining to our own hook would recurse forever, so keep
+    -- the original one the first install saved.
+    previousHook = old.previousHook
+  else
+    previousHook = rawget(_G, 'onPhysicsStep')
+  end
+end
+
 local S = {{}}
 _G.{STATE_GLOBAL} = S
+S.previousHook = previousHook
 S.t = 0
 S.acc = 0
 S.seq = 0
@@ -70,6 +87,11 @@ S.capture = capture
 
 function onPhysicsStep(dt)
   local S = _G.{STATE_GLOBAL}
+  -- Whatever was here before runs first and unconditionally. Sampling must
+  -- never be the reason the vehicle stops working.
+  if S and S.previousHook then
+    pcall(S.previousHook, dt)
+  end
   if not S then return end
   S.t = S.t + dt
   S.acc = S.acc + dt
@@ -143,10 +165,15 @@ return jsonEncode({{samples = taken, dropped = dropped, err = err,
 
 
 def uninstall_source() -> str:
-    """Lua that stops the sampler. Safe when it was never installed."""
+    """Lua that stops the sampler and puts back what it displaced."""
     return f"""
-enablePhysicsStepHook(false)
-onPhysicsStep = nil
+local S = _G.{STATE_GLOBAL}
+local previousHook = S and S.previousHook or nil
+_G.onPhysicsStep = previousHook
+if previousHook == nil then
+  -- Only switch the hook off if nothing else was using it.
+  enablePhysicsStepHook(false)
+end
 _G.{STATE_GLOBAL} = nil
 return 'uninstalled'
 """

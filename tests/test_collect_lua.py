@@ -41,6 +41,35 @@ def test_install_computes_mass_before_the_hook_not_inside_it():
     assert "getNodeMass" in before_hook
 
 
+def test_install_keeps_the_hook_it_displaces():
+    # `onPhysicsStep` is already a global in the vehicle VM, so defining one
+    # replaces whatever was there. That is what stopped the AI driving.
+    source = install_source(0.01)
+    assert "rawget(_G, 'onPhysicsStep')" in source
+    assert "pcall(S.previousHook, dt)" in source
+
+
+def test_a_reinstall_does_not_chain_to_its_own_hook():
+    # Chaining to ourselves would recurse until the VM died.
+    source = install_source(0.01)
+    assert "previousHook = old.previousHook" in source
+
+
+def test_the_displaced_hook_runs_before_any_sampling():
+    body = install_source(0.01).split("function onPhysicsStep")[1]
+    assert body.index("previousHook") < body.index("S.t = S.t + dt")
+
+
+def test_uninstall_puts_the_original_hook_back():
+    source = uninstall_source()
+    assert "_G.onPhysicsStep = previousHook" in source
+
+
+def test_uninstall_leaves_the_hook_enabled_when_something_else_wanted_it():
+    source = uninstall_source()
+    assert "if previousHook == nil then" in source
+
+
 def test_install_enables_the_physics_hook():
     assert "enablePhysicsStepHook(true)" in install_source(0.01)
 
@@ -65,7 +94,7 @@ def test_drain_reports_when_the_sampler_is_not_installed():
     assert "not_installed" in drain_source()
 
 
-def test_uninstall_disables_the_hook_and_clears_the_state():
+def test_uninstall_clears_the_sampler_state():
     source = uninstall_source()
     assert "enablePhysicsStepHook(false)" in source
     assert f"_G.{STATE_GLOBAL} = nil" in source

@@ -6,6 +6,18 @@
     py drive_route.py stops
     py drive_route.py aggressive --roam   no destination, cover the network
     py drive_route.py --show-route        what the game says your route is
+    py drive_route.py --nodes             navgraph node names near the car
+    py drive_route.py economical --path a,b,c --laps 2
+
+Two ways to say where to go. A **destination** -- the blue line, or `--to` --
+lets the AI pick its own roads, so the road varies between runs and confounds
+the style with the route. A **`--path`** is an explicit list of navgraph nodes
+driven in order: the same tarmac every time, which is what makes two styles
+comparable. Prefer `--path` for anything that will be compared.
+
+`--path` is BeamNGpy's `vehicle.ai.drive_using_waypoints`. That method wraps a
+single vehicle-VM Lua call, `ai.driveUsingPath`, so it needs no BeamNG.tech
+licence when issued from here -- only the scenario building around it does.
 
 Set a destination in BeamNG's map first -- the blue line on the road is the
 route. This reads where that line ends, drives there, and records the whole
@@ -37,6 +49,7 @@ import argparse
 import json
 import math
 import random
+import re
 import sys
 import time
 from dataclasses import dataclass
@@ -60,6 +73,43 @@ SAMPLE_INTERVAL_S = 0.01
 #: Close enough to count as arrived. The AI stops *at* its target, so a tighter
 #: radius means waiting for it to settle.
 ARRIVED_M = 25.0
+
+#: A path has no destination to measure against -- the AI simply stops when the
+#: laps are done. So the end is inferred: this many consecutive ticks below
+#: `STILL_SPEED_MPS`, and then the AI itself confirms it has finished. One tick
+#: is one second, and the confirmation costs a VM round trip, so it is only
+#: asked once the car has actually been still for a while.
+STILL_TICKS = 5
+STILL_SPEED_MPS = 0.5
+
+#: Navgraph node names are identifiers. Anything else is heading into a Lua
+#: string literal, and these arrive from a file, so it is refused rather than
+#: escaped.
+WAYPOINT_RE = re.compile(r"^[A-Za-z0-9_.\-]+$")
+
+
+def lua_list(names) -> str:
+    """A Lua table literal of waypoint names, checked before it is built."""
+    for name in names:
+        if not WAYPOINT_RE.match(str(name)):
+            raise ValueError(f"not a navgraph node name: {name!r}")
+    return "{" + ", ".join(f"'{name}'" for name in names) + "}"
+
+
+def load_path(given: str) -> list[str]:
+    """Waypoint names from a comma-separated list, or from a JSON file.
+
+    The file is either a bare list or an object with a `waypoints` key, so a
+    saved route can also record which level it belongs to -- a node name means
+    nothing on the wrong map.
+    """
+    candidate = Path(given)
+    if candidate.exists():
+        data = json.loads(candidate.read_text())
+        names = data.get("waypoints", []) if isinstance(data, dict) else data
+    else:
+        names = given.split(",")
+    return [str(name).strip() for name in names if str(name).strip()]
 
 
 @dataclass(frozen=True)
@@ -135,6 +185,38 @@ class Ai:
         """
         self.vm.call(f"ai.setTarget('{waypoint}') return true")
         self.vm.call("ai.setMode('manual') return true")
+
+    def drive_path(self, waypoints, style: Style, laps: int = 1,
+                   route_speed: float | None = None) -> None:
+        """Drive an explicit list of navgraph nodes, in the order given.
+
+        This is BeamNGpy's `vehicle.ai.drive_using_waypoints`. That method is a
+        wrapper over this one vehicle-VM function, so it needs no BeamNG.tech
+        licence when issued from here -- only the scenario building around it
+        in BeamNGpy does.
+
+        Preferred over `drive_to` whenever two runs are to be compared: a
+        destination lets the AI choose its own roads, and a route that varies
+        between runs confounds the style with the road. A path is the same
+        tarmac every time.
+
+        The style travels *inside* the call rather than through `configure`
+        beforehand, because the call is what starts the car.
+        """
+        if len(waypoints) < 2:
+            raise ValueError("a path needs at least two waypoints")
+        held = route_speed is not None
+        self.vm.call(
+            "ai.driveUsingPath{"
+            f"wpTargetList = {lua_list(waypoints)}, "
+            f"noOfLaps = {int(laps)}, "
+            f"routeSpeed = {float(route_speed or 0.0)}, "
+            f"routeSpeedMode = '{'set' if held else style.speed_mode}', "
+            f"driveInLane = '{'on' if style.drive_in_lane else 'off'}', "
+            f"aggression = {style.aggression}, "
+            "avoidCars = 'on'"
+            "} return true"
+        )
 
     def halt(self) -> None:
         """Stop where it is, engine running. That is the pathway being sampled."""
@@ -265,12 +347,19 @@ class Journey:
     """
 
     def __init__(self, ai: Ai, source, destination, style, seed=0,
-                 waypoint=None):
+                 waypoint=None, path=None, laps=1, route_speed=None):
         self.ai = ai
         self.source = source
         self.destination = destination
         self.style = style
         self.waypoint = waypoint
+        self.path = list(path) if path else None
+        self.laps = laps
+        self.route_speed = route_speed
+        #: A path run ends by going still, so "still" only means something
+        #: once the car has moved at all.
+        self.moved = False
+        self.still = 0
         self.random = random.Random(seed)
         self.arrived = False
         self.stops = 0
@@ -301,6 +390,10 @@ class Journey:
             self.arrived = True
             return
 
+        if self.path and self._path_finished(latest):
+            self.arrived = True
+            return
+
         if self.stopped_until:
             if elapsed >= self.stopped_until:
                 self.stopped_until = 0.0
@@ -313,10 +406,36 @@ class Journey:
 
         self._report(rows, elapsed, total, left, latest)
 
+    def _path_finished(self, latest: dict) -> bool:
+        """Have the laps run out?
+
+        There is no destination to measure against, so this watches for the car
+        going still and then asks the AI to confirm. The confirmation is a VM
+        round trip, which is why it is not asked every tick.
+        """
+        if self.stopped_until:
+            # The 'stops' style halts on purpose. That is not arrival.
+            self.still = 0
+            return False
+        if float(latest.get("speed_mps") or 0.0) > STILL_SPEED_MPS:
+            self.moved = True
+            self.still = 0
+            return False
+        if not self.moved:
+            # Still on the line. A car that never left has not arrived.
+            return False
+        self.still += 1
+        if self.still < STILL_TICKS:
+            return False
+        return self.ai.is_driving() is False
+
     def send_off(self) -> None:
         """Set the style, then start it. At every leg, restarts included."""
         self.ai.configure(self.style)
-        if self.waypoint:
+        if self.path:
+            self.ai.drive_path(self.path, self.style, laps=self.laps,
+                               route_speed=self.route_speed)
+        elif self.waypoint:
             self.ai.drive_to(self.waypoint)
         else:
             self.ai.roam()
@@ -324,7 +443,8 @@ class Journey:
     def _report(self, rows, elapsed, total, left, latest) -> None:
         speed = float(latest.get("speed_mps") or 0.0)
         where = "stopped" if self.stopped_until else (
-            f"{left:6.0f} m to go" if left is not None else "roaming")
+            f"{left:6.0f} m to go" if left is not None
+            else ("on the path" if self.path else "roaming"))
         print(f"\r  {elapsed:5.0f}s / {total:.0f}s   {rows:7d} rows   "
               f"{speed:5.1f} m/s   {where}   {self.stops} stops",
               end="", flush=True)
@@ -353,6 +473,19 @@ def main(argv=None) -> int:
     parser.add_argument("--to", help="x,y,z instead of the route on the map")
     parser.add_argument("--roam", action="store_true",
                         help="cover the road network instead of going anywhere")
+    parser.add_argument("--path",
+                        help="navgraph nodes to drive in order: a comma-"
+                             "separated list, or a JSON file of them. Fixes "
+                             "the road, so two styles are comparable")
+    parser.add_argument("--laps", type=int, default=1,
+                        help="times round the path")
+    parser.add_argument("--route-speed", type=float, default=None,
+                        help="m/s to hold along the path, overriding the "
+                             "style's speed mode")
+    parser.add_argument("--nodes", nargs="?", type=float, const=200.0,
+                        default=None, metavar="RADIUS_M",
+                        help="print navgraph node names near the car, to "
+                             "build a --path from, and stop")
     parser.add_argument("--seed", type=int, default=0,
                         help="which stops happen where, reproducibly")
     parser.add_argument("--ambient", type=float, default=25.0,
@@ -363,8 +496,10 @@ def main(argv=None) -> int:
     parser.add_argument("--endpoint", default=DEFAULT_ENDPOINT)
     args = parser.parse_args(argv)
 
-    if not args.style and not args.show_route:
-        parser.error("pick a style, or pass --show-route")
+    if not args.style and not args.show_route and args.nodes is None:
+        parser.error("pick a style, or pass --show-route or --nodes")
+    if args.path and (args.roam or args.to):
+        parser.error("--path is a route already; --roam and --to are not it")
 
     client = MCPClient(args.endpoint)
     try:
@@ -380,14 +515,26 @@ def main(argv=None) -> int:
     level = str(status.get("level", "unknown"))
     vehicle = status.get("vehicle", {})
 
-    if args.roam:
+    if args.nodes is not None:
+        return list_nodes(client, status, args.nodes)
+
+    path = load_path(args.path) if args.path else None
+    if path is not None and len(path) < 2:
+        print(f"\n  A path needs at least two nodes; got {len(path)}.",
+              file=sys.stderr)
+        return 1
+
+    if path:
+        destination, how = None, {"how": "path", "waypoints": path,
+                                  "laps": args.laps}
+    elif args.roam:
         destination, how = None, {"how": "roaming"}
     else:
         destination, how = resolve_destination(client, args)
     if args.show_route:
         print(json.dumps(how, indent=2, sort_keys=True))
         return 0
-    if destination is None and not args.roam:
+    if destination is None and not args.roam and not path:
         return explain_no_route(how)
 
     style = STYLES[args.style]
@@ -396,7 +543,8 @@ def main(argv=None) -> int:
         minutes=args.minutes, accessory_load_a=style.accessory_load_a,
         ambient_temp_c=args.ambient,
         vehicle_config=f"{vehicle.get('jbeam', '?')}/{vehicle.get('configKey', '')}",
-        route="roam" if args.roam else f"route:{how.get('how', 'given')}",
+        route=(f"path:{len(path)}x{args.laps}" if path
+               else "roam" if args.roam else f"route:{how.get('how', 'given')}"),
         seed=args.seed,
     )
     csv_path = (RUNS / f"{time.strftime('%Y%m%d-%H%M%S')}_{style.name}"
@@ -420,7 +568,12 @@ def main(argv=None) -> int:
         return 1
 
     print(f"  style     : {style.name} -- {style.why}")
-    if destination is None:
+    if path:
+        print(f"  route     : {len(path)} nodes, {args.laps} lap(s): "
+              f"{' -> '.join(path[:4])}{' -> ...' if len(path) > 4 else ''}")
+        if args.route_speed:
+            print(f"  speed     : holding {args.route_speed:.1f} m/s")
+    elif destination is None:
         print("  route     : roaming the road network")
     else:
         print(f"  route     : from {how.get('how', 'given')}, to "
@@ -438,12 +591,15 @@ def main(argv=None) -> int:
 
     ai = Ai(VehicleVM(client))
     journey = Journey(ai, source, destination, style, seed=args.seed,
-                      waypoint=waypoint)
+                      waypoint=waypoint, path=path, laps=args.laps,
+                      route_speed=args.route_speed)
 
     beamng = {"backend": "mcp", "level": level, "endpoint": client.endpoint,
               "vehicle": vehicle.get("jbeam", "unknown"),
               "mass_kg": source.mass_kg, "destination": destination,
               "waypoint": waypoint, "route_from": how.get("how"),
+              "path": path, "laps": args.laps if path else None,
+              "route_speed_mps": args.route_speed,
               "style": style.name, "driver": "ai in the vehicle VM"}
 
     try:
@@ -484,6 +640,39 @@ def resolve_destination(client, args) -> tuple[dict | None, dict]:
             return None, {"how": "bad --to", "given": args.to}
         return {"x": x, "y": y, "z": rest[0] if rest else 0.0}, {"how": "--to"}
     return find_destination(client)
+
+
+def list_nodes(client, status: dict, radius: float) -> int:
+    """Print the navgraph node names near the car, to build a `--path` from.
+
+    A path is a list of names, and the names are per-map -- `hr_start` exists
+    on Hirochi Raceway and nowhere else. So there has to be a way to ask.
+    """
+    vehicle = status.get("vehicle", {}) if isinstance(status, dict) else {}
+    pos = vehicle.get("pos") or {}
+    if not pos:
+        print("\n  No vehicle position. Spawn a car on a real map first.",
+              file=sys.stderr)
+        return 1
+
+    graph = ask(client, "get_navgraph", {"near": pos, "radius": radius})
+    nodes = graph.get("nodes") if isinstance(graph, dict) else None
+    names = [n.get("name") for n in nodes or []
+             if isinstance(n, dict) and n.get("name")]
+    if not names:
+        print("\n  No navgraph nodes came back. What the game did answer:\n",
+              file=sys.stderr)
+        print(json.dumps(graph, indent=2, sort_keys=True)[:2000],
+              file=sys.stderr)
+        return 1
+
+    print(f"\n  {len(names)} navgraph nodes within {radius:.0f} m of the car:\n")
+    for name in sorted(names):
+        print(f"    {name}")
+    print("\n  Drive them in order, twice round:\n")
+    print(f"    py drive_route.py economical --path {','.join(names[:4])} "
+          "--laps 2\n")
+    return 0
 
 
 def explain_no_route(how: dict) -> int:
