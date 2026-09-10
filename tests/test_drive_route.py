@@ -133,16 +133,71 @@ def test_send_off_hands_the_destination_to_the_games_ai():
     assert drive_to["id"] == 7
 
 
-def test_send_off_releases_the_parking_brake_first():
-    # A spawned car can sit with it on, and the AI will not override it. That
-    # looks exactly like a refused drive_to from outside.
-    client = FakeClient()
-    drive_route.send_off(client, 7, {"x": 0.0, "y": 0.0, "z": 0.0},
-                         STYLES["economical"])
-    released = {args["event"]: args["value"]
-                for args in client.tools("inject_input")}
-    assert released["parkingbrake"] == 0.0
-    assert released["brake"] == 0.0
+def holding(parkingbrake=1, brake=0.3):
+    """A vehicle VM reply describing what is holding the car still."""
+    return {"7": json.dumps({"parkingbrake": parkingbrake, "brake": brake,
+                             "throttle": 0, "gear": 0})}
+
+
+def test_a_free_car_is_left_alone():
+    client = FakeClient({"run_lua_vehicle": holding(parkingbrake=0)})
+    assert drive_route.free_the_car(client, 7) == "already free"
+    assert len(client.tools("run_lua_vehicle")) == 1
+
+
+def test_the_parking_brake_goes_through_the_vehicles_own_input_system():
+    # `inject_input` sets an input for a moment and the vehicle reasserts
+    # itself, which is why the brake survived being told to release.
+    replies = [holding(1), {"7": json.dumps({"ok": True})}, holding(0)]
+    client = FakeClient({"run_lua_vehicle": lambda _a: replies.pop(0)})
+    assert drive_route.free_the_car(client, 7) == "input.event, FILTER_DIRECT"
+    code = client.tools("run_lua_vehicle")[1]["code"]
+    assert "input.event('parkingbrake', 0, FILTER_DIRECT)" in code
+
+
+def test_it_moves_on_to_the_next_release_when_one_does_not_take():
+    # still held after the first, free after the second
+    replies = [holding(1), {"7": json.dumps({"ok": True})}, holding(1),
+               {"7": json.dumps({"ok": True})}, holding(0)]
+    client = FakeClient({"run_lua_vehicle": lambda _a: replies.pop(0)})
+    assert drive_route.free_the_car(client, 7) == "input.event, default filter"
+
+
+def test_it_reports_when_nothing_lets_the_car_go():
+    client = FakeClient({"run_lua_vehicle": holding(1)})
+    said = []
+    assert drive_route.free_the_car(client, 7, report=said.append) is None
+    assert "could not release" in said[-1]
+
+
+def test_every_release_route_is_tried_before_giving_up():
+    client = FakeClient({"run_lua_vehicle": holding(1)})
+    drive_route.free_the_car(client, 7)
+    attempted = [args["code"] for args in client.tools("run_lua_vehicle")]
+    for _name, action in drive_route.RELEASES:
+        assert any(action in code for code in attempted)
+
+
+def test_an_async_notice_is_not_mistaken_for_an_answer():
+    # Two wordings exist and checking for only one reads a notice as a reply.
+    from collect.decode import is_async_notice
+
+    assert is_async_notice("queued in vehicle VM(s); call again in a moment")
+    assert is_async_notice("ai state requested (async); call again in a moment")
+    assert not is_async_notice('{"parkingbrake": 0}')
+
+
+def test_ask_waits_the_notice_out():
+    replies = ["ai state requested (async); call again in a moment",
+               {"mode": "manual", "aggression": 1.0}]
+    client = FakeClient({"get_ai": lambda _a: replies.pop(0)})
+    assert drive_route.ask(client, "get_ai", wait_s=0.0)["mode"] == "manual"
+
+
+def test_ask_gives_up_rather_than_waiting_forever():
+    client = FakeClient({"get_ai": "requested (async); call again in a moment"})
+    assert drive_route.ask(client, "get_ai", attempts=3, wait_s=0.0) is None
+    assert len(client.tools("get_ai")) == 3
 
 
 def test_send_off_asks_for_everything_first():

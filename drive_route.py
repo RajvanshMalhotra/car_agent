@@ -38,6 +38,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 
+from collect.decode import is_async_notice  # noqa: E402
 from collect.mcp_source import MCPTrajectorySource  # noqa: E402
 from collect.run import collect_run  # noqa: E402
 from collect.scenario import ScenarioSpec  # noqa: E402
@@ -179,20 +180,96 @@ def refused(result) -> bool:
                                          "bad argument", "nil value"))
 
 
-def free_the_car(client, vehicle_id: int) -> None:
-    """Release anything holding the car still.
+def ask(client, tool: str, arguments: dict | None = None,
+        attempts: int = 10, wait_s: float = 0.2):
+    """Call a tool and wait out the async notice.
+
+    Several tools answer "requested (async); call again in a moment" and
+    deliver on a later call. Taking that notice for the answer is how the first
+    probe run came back shifted by two, and how `get_ai` printed the notice
+    instead of the AI's state.
+    """
+    for attempt in range(attempts):
+        if attempt and wait_s:
+            time.sleep(wait_s)
+        try:
+            raw = client.call(tool, arguments or {})
+        except MCPError as error:
+            return {"error": str(error)}
+        if raw is None or is_async_notice(raw):
+            continue
+        return raw
+    return None
+
+
+def vehicle_lua(client, code: str, attempts: int = 10, wait_s: float = 0.2):
+    """Run Lua in the vehicle VM and hand back the parsed answer."""
+    raw = ask(client, "run_lua_vehicle", {"code": code}, attempts, wait_s)
+    if raw is None:
+        return None
+    for value in (raw.values() if isinstance(raw, dict) else [raw]):
+        if isinstance(value, str):
+            try:
+                return json.loads(value)
+            except (json.JSONDecodeError, ValueError):
+                return value
+    return raw
+
+
+#: Ways to let a car go, most likely first. `inject_input` sets an input for a
+#: moment and the vehicle's own input system reasserts itself, which is why the
+#: parking brake survived being told to release. These go through the vehicle's
+#: input system instead, and each one is checked rather than assumed.
+RELEASES = (
+    ("input.event, FILTER_DIRECT",
+     "input.event('parkingbrake', 0, FILTER_DIRECT) "
+     "input.event('brake', 0, FILTER_DIRECT) "
+     "input.event('throttle', 0, FILTER_DIRECT)"),
+    ("input.event, default filter",
+     "input.event('parkingbrake', 0) input.event('brake', 0)"),
+    ("input.event, FILTER_AI",
+     "input.event('parkingbrake', 0, FILTER_AI) input.event('brake', 0, FILTER_AI)"),
+    ("electrics, written directly",
+     "electrics.values.parkingbrake = 0 "
+     "electrics.values.parkingbrake_input = 0 "
+     "electrics.values.brake = 0 electrics.values.brake_input = 0"),
+)
+
+HOLDING_LUA = ("return jsonEncode({parkingbrake = electrics.values.parkingbrake, "
+               "brake = electrics.values.brake, "
+               "throttle = electrics.values.throttle, "
+               "gear = electrics.values.gearIndex})")
+
+
+def held_by(client) -> dict:
+    """What is currently holding the car still, as the vehicle reports it."""
+    state = vehicle_lua(client, HOLDING_LUA)
+    return state if isinstance(state, dict) else {}
+
+
+def free_the_car(client, vehicle_id: int, report=None) -> str | None:
+    """Release anything holding the car still, and confirm it let go.
 
     A spawned vehicle can sit with its parking brake on, and the AI will not
-    override it. That is indistinguishable from a refused `drive_to`, so both
-    get ruled out rather than guessed between.
+    override it -- which from outside is indistinguishable from a refused
+    `drive_to`. Returns the name of whatever worked, or None.
     """
-    for event, value in (("parkingbrake", 0.0), ("brake", 0.0),
-                         ("throttle", 0.0), ("clutch", 0.0)):
-        try:
-            client.call("inject_input",
-                        {"id": vehicle_id, "event": event, "value": value})
-        except MCPError:
-            pass
+    if not held_by(client).get("parkingbrake"):
+        return "already free"
+
+    for name, action in RELEASES:
+        vehicle_lua(client, f"""
+local ok, err = pcall(function() {action} end)
+return jsonEncode({{ok = ok, error = (not ok) and tostring(err) or nil}})
+""")
+        time.sleep(0.3)
+        if not held_by(client).get("parkingbrake"):
+            if report:
+                report(f"released the parking brake with {name}")
+            return name
+    if report:
+        report("could not release the parking brake by any means")
+    return None
 
 
 def send_off(client, vehicle_id: int, destination: dict, style: Style,
@@ -455,25 +532,12 @@ WHY_STUCK = ("parkingbrake", "ignitionLevel", "engineRunning", "rpm", "gear",
 
 
 def read_electrics(client, keys) -> dict:
-    """Read a few electrics, draining the async queue until they arrive."""
+    """Read a few electrics, waiting out the async queue."""
     code = ("return jsonEncode({"
             + ", ".join(f"{k} = electrics.values.{k}" for k in keys)
             + "})")
-    for attempt in range(8):
-        if attempt:
-            time.sleep(0.2)
-        try:
-            raw = client.call("run_lua_vehicle", {"code": code})
-        except MCPError as error:
-            return {"error": str(error)}
-        for value in (raw.values() if isinstance(raw, dict) else [raw]):
-            if not isinstance(value, str) or "queued" in value:
-                continue
-            try:
-                return json.loads(value)
-            except (json.JSONDecodeError, ValueError):
-                continue
-    return {}
+    state = vehicle_lua(client, code)
+    return state if isinstance(state, dict) else {}
 
 
 def diagnose(client, vehicle_id: int, destination: dict, style: Style) -> int:
@@ -491,6 +555,12 @@ def diagnose(client, vehicle_id: int, destination: dict, style: Style) -> int:
     if before.get("parkingbrake"):
         print("    ^ the parking brake is on. The AI will not override it.")
 
+    print("\n  LETTING THE CAR GO")
+    freed = free_the_car(client, vehicle_id, report=lambda why: print(f"    {why}"))
+    print(f"    now: {json.dumps(held_by(client), sort_keys=True)}")
+    if freed is None:
+        print("    Send this back -- none of the release routes worked.")
+
     print("\n  SENDING OFF")
     try:
         accepted = send_off(client, vehicle_id, destination, style)
@@ -500,16 +570,8 @@ def diagnose(client, vehicle_id: int, destination: dict, style: Style) -> int:
     print(f"    accepted: drive_to{list(accepted) or ' (pos only)'}")
 
     print("\n  WHAT THE AI THINKS IT IS DOING")
-    for attempt in range(8):
-        if attempt:
-            time.sleep(0.2)
-        state = client.call("get_ai", {"id": vehicle_id})
-        if isinstance(state, dict) and state:
-            print(f"    {json.dumps(state, sort_keys=True)}")
-            break
-        if isinstance(state, str) and "queued" not in state:
-            print(f"    {state[:200]}")
-            break
+    state = ask(client, "get_ai", {"id": vehicle_id})
+    print(f"    {json.dumps(state, sort_keys=True) if isinstance(state, dict) else state}")
 
     print("\n  AFTER FIVE SECONDS")
     time.sleep(5.0)

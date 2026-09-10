@@ -21,6 +21,17 @@ from collect.schema import MEASURED
 NAMES = tuple(c.name for c in MEASURED)
 
 
+#: How the server says "not yet". It has two wordings -- `run_lua_vehicle`
+#: answers "queued in vehicle VM(s)" and the read tools answer "... requested
+#: (async)" -- and checking for only one of them reads a notice as an answer.
+ASYNC_NOTICES = ("queued", "(async)", "call again in a moment")
+
+
+def is_async_notice(value) -> bool:
+    text = str(value).lower()
+    return any(notice in text for notice in ASYNC_NOTICES)
+
+
 class DecodeError(RuntimeError):
     """The payload was not something this can read."""
 
@@ -42,7 +53,7 @@ class Drain:
 def _as_object(payload: object) -> dict:
     if isinstance(payload, str):
         text = payload.strip()
-        if "queued" in text:
+        if is_async_notice(text):
             raise _Pending()
         try:
             return json.loads(text)
