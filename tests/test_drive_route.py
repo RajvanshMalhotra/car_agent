@@ -10,6 +10,7 @@ import json
 import pytest
 
 import drive_route
+from sim.mcp_client import MCPError
 from drive_route import STYLES, Journey, Style, find_destination, resolve_destination
 
 
@@ -185,6 +186,51 @@ def test_an_async_notice_is_not_mistaken_for_an_answer():
     assert is_async_notice("queued in vehicle VM(s); call again in a moment")
     assert is_async_notice("ai state requested (async); call again in a moment")
     assert not is_async_notice('{"parkingbrake": 0}')
+
+
+def test_a_picture_is_taken_and_its_path_kept():
+    client = FakeClient({"screenshot": "C:/BeamNG/screenshots/shot.jpg"})
+    shots = []
+    drive_route.look(client, "after span", shots)
+    assert shots == [("after span", "C:/BeamNG/screenshots/shot.jpg")]
+
+
+def test_a_screenshot_that_is_not_ready_yet_is_waited_for():
+    replies = ["screenshot requested (async); call again in a moment",
+               "C:/BeamNG/screenshots/shot.jpg"]
+    client = FakeClient({"screenshot": lambda _a: replies.pop(0)})
+    shots = []
+    drive_route.look(client, "after span", shots)
+    assert shots[0][1].endswith("shot.jpg")
+
+
+def test_a_failed_screenshot_does_not_take_the_diagnosis_with_it():
+    class Broken(FakeClient):
+        def call(self, name, arguments=None):
+            if name == "screenshot":
+                raise MCPError("no screenshot on this build")
+            return super().call(name, arguments)
+
+    shots = []
+    drive_route.look(Broken(), "after span", shots)
+    assert shots == []
+
+
+def test_the_destination_is_drawn_so_a_picture_shows_the_target():
+    client = FakeClient()
+    drive_route.show_the_target(client, {"x": 1.0, "y": 2.0, "z": 3.0})
+    drawn = client.tools("debug_draw")[0]
+    assert drawn["pos"] == {"x": 1.0, "y": 2.0, "z": 3.0}
+
+
+def test_where_it_is_reports_whether_the_ground_is_drivable():
+    client = FakeClient({
+        "get_status": {"vehicle": {"pos": {"x": 1.0}, "damage": 0}},
+        "get_ground_at_point": {"drivability": 0.0, "surfaceHeight": 100.0},
+    })
+    where = drive_route.where_is_it(client)
+    assert where["drivability_under_car"] == 0.0
+    assert where["damage"] == 0
 
 
 def test_ask_waits_the_notice_out():

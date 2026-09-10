@@ -546,17 +546,63 @@ SETTLE_S = 6.0
 MOVING_MPS = 1.0
 
 
+def look(client, label: str, shots: list) -> None:
+    """Take a picture of whatever is going on.
+
+    Two rounds of reading numbers have not said why the car is stationary. A
+    screenshot answers questions the electrics cannot: whether the car is on a
+    road, on its roof, in the air, or behind a dialog nobody dismissed.
+    """
+    try:
+        path = client.call("screenshot", {"jpg": True})
+    except MCPError as error:
+        print(f"    (no screenshot: {error})")
+        return
+    if is_async_notice(path):
+        path = ask(client, "screenshot", {"jpg": True}) or path
+    shots.append((label, str(path)))
+    print(f"    picture: {path}")
+
+
+def show_the_target(client, destination: dict) -> None:
+    """Draw the destination in the world, so a picture shows what it is aiming at."""
+    try:
+        client.call("debug_draw", {
+            "id": "car_agent_target", "kind": "sphere", "pos": destination,
+            "radius": 4.0, "color": [1, 0.2, 0.2, 0.6],
+            "label": "destination", "ttl": 600,
+        })
+    except MCPError:
+        pass
+
+
+def where_is_it(client) -> dict:
+    """Position, and whether the ground under the car is drivable at all."""
+    out = {}
+    status = ask(client, "get_status")
+    if isinstance(status, dict):
+        out["pos"] = (status.get("vehicle") or {}).get("pos")
+        out["damage"] = (status.get("vehicle") or {}).get("damage")
+    ground = ask(client, "get_ground_at_point")
+    if isinstance(ground, dict):
+        out["drivability_under_car"] = ground.get("drivability")
+        out["surface_height"] = ground.get("surfaceHeight")
+    return out
+
+
 def speed_now(client) -> float:
     return float(held_by(client).get("wheelspeed") or 0.0)
 
 
-def did_it_move(client, label: str) -> bool:
+def did_it_move(client, label: str, shots: list | None = None) -> bool:
     """Wait, then say whether the car actually went anywhere."""
     time.sleep(SETTLE_S)
     speed = speed_now(client)
     moving = speed > MOVING_MPS
     print(f"    {label:34} {speed:7.2f} m/s   "
           f"{'MOVING' if moving else 'stationary'}")
+    if shots is not None:
+        look(client, label, shots)
     return moving
 
 
@@ -572,6 +618,17 @@ def diagnose(client, vehicle_id: int, destination: dict, style: Style) -> int:
     that has ever demonstrably driven a car. If span moves it and `drive_to`
     does not, the car is fine and the routing is the problem.
     """
+    shots: list = []
+    try:
+        client.call("set_camera", {"name": "orbit"})
+    except MCPError:
+        pass
+    show_the_target(client, destination)
+
+    print("\n  WHERE IT IS")
+    for key, value in sorted(where_is_it(client).items()):
+        print(f"    {key:24} {value}")
+
     print("\n  WHAT IS HOLDING IT")
     for key, value in sorted(read_electrics(client, WHY_STUCK).items()):
         print(f"    {key:16} {value}")
@@ -589,7 +646,7 @@ def diagnose(client, vehicle_id: int, destination: dict, style: Style) -> int:
     # not move the car then nothing about the route is to blame.
     client.call("set_ai", {"id": vehicle_id, "mode": "span",
                            "aggression": style.aggression, "avoidCars": True})
-    span_moved = did_it_move(client, "set_ai span (the known-good one)")
+    span_moved = did_it_move(client, "set_ai span (the known-good one)", shots)
     client.call("set_ai", {"id": vehicle_id, "mode": "disabled"})
     time.sleep(1.0)
 
@@ -599,7 +656,7 @@ def diagnose(client, vehicle_id: int, destination: dict, style: Style) -> int:
         "aggression": style.aggression, "avoidCars": True,
     })
     print(f"    drive_to said: {str(reply)[:100]}")
-    alone_moved = did_it_move(client, "drive_to on its own")
+    alone_moved = did_it_move(client, "drive_to on its own", shots)
     client.call("set_ai", {"id": vehicle_id, "mode": "disabled"})
     time.sleep(1.0)
 
@@ -611,7 +668,7 @@ def diagnose(client, vehicle_id: int, destination: dict, style: Style) -> int:
         "aggression": style.aggression, "avoidCars": True,
         "driveInLane": style.drive_in_lane, "routeSpeedMode": style.speed_mode,
     })
-    manual_moved = did_it_move(client, "set_ai manual, then drive_to")
+    manual_moved = did_it_move(client, "set_ai manual, then drive_to", shots)
 
     print("\n  WHAT THE AI THINKS IT IS DOING")
     state = ask(client, "get_ai", {"id": vehicle_id})
@@ -624,6 +681,15 @@ def diagnose(client, vehicle_id: int, destination: dict, style: Style) -> int:
     print(f"    navgraph near it: {str(navgraph)[:200]}")
 
     hand_back(client, vehicle_id)
+    try:
+        client.call("debug_clear", {"id": "car_agent_target"})
+    except MCPError:
+        pass
+
+    if shots:
+        print("\n  PICTURES -- send these back, they say what numbers cannot")
+        for label, path in shots:
+            print(f"    {label:34} {path}")
 
     print("\n  VERDICT")
     if not span_moved and not alone_moved and not manual_moved:
