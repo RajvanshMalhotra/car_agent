@@ -27,8 +27,13 @@ def collect_run(
     sleep=time.sleep,
     beamng: dict | None = None,
     on_progress=None,
+    should_stop=None,
 ) -> dict:
-    """Collect for `seconds`, and return the run summary."""
+    """Collect for `seconds`, and return the run summary.
+
+    `should_stop` ends the run early and normally -- arriving somewhere is not
+    an interruption, and the caller should not have to fake one to say so.
+    """
     started = clock()
     with TrajectoryLog(csv_path, spec, source.interval_s, beamng=beamng) as log:
         source.start()
@@ -38,6 +43,8 @@ def collect_run(
                 log.write(source.drain())
                 if on_progress:
                     on_progress(log.rows, clock() - started, seconds)
+                if should_stop and should_stop():
+                    break
             # Whatever is still buffered when time expires is still data.
             log.write(source.drain())
         except KeyboardInterrupt:
