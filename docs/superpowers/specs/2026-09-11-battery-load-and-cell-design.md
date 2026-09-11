@@ -32,8 +32,26 @@ before `collect/` existed. Profiled directly:
 - 72.8% of rows stationary (< 0.5 m/s)
 - coolant (`engine_temp`) mean 101 C, max 130 C; `oil_temp` max 212 C
 
-Three columns are unusable and must be recorded as such rather than silently
-consumed:
+**The last 150.8 s is a telemetry dropout, not data.** From t = 1779.18 s to
+the end, 14,283 contiguous rows, every OutGauge channel is exactly zero at
+once -- `engine_temp`, `oil_temp`, `fuel`, `rpm`, `turbo` -- while MotionSim
+keeps streaming a frozen position. Fuel goes from 0.9256 to 0.0 between samples
+10 ms apart and coolant from 101.77 C to 0.0. OutGauge stopped sending.
+
+Consumed as data it reads as the engine bay collapsing to ambient during the
+hottest part of the soak, in a corrosion term that is exponential in
+temperature. It is excluded rather than interpolated: we do not know what the
+bay did, and drawing a plausible decay across the gap would fabricate exactly
+the measurement the model exists to consume. Usable data is therefore
+t in [0, 1779.18): 1,192 s of driving and 587 s of soak.
+
+`load/dropout.py` detects this generally rather than special-casing the file --
+a Lua drain can go dark too. The test is that *every* watched channel is zero
+simultaneously; one zero alone is a measurement, since an empty tank is a real
+state.
+
+Three further columns are unusable and must be recorded as such rather than
+silently consumed:
 
 | column | state | cause |
 |---|---|---|
@@ -209,7 +227,25 @@ accumulated value, so a summary statistic cannot express them.
   followed by a full recharge, shrinking on full charge.
 - **shedding**: vibration dose from `ax ay az`.
 
-SOH is the combination; end of life is SOH = 0.8.
+SOH is the combination; end of life is SOH = 0.8. `corrosion_eol_h` is the
+Arrhenius-weighted exposure at which corrosion alone reaches that point, and
+the sulfation and shedding weights are expressed relative to a full corrosion
+life, so the constant means what its name says.
+
+It is set to 115,000 by working backwards from ordinary use. A day of that is
+about 79 Arrhenius-weighted hours: 1.5 h driving with the bay near 60 C is
+20.8, an hour of post-shutdown heat soak near 75 C is another 36.4, and 21.5 h
+parked at 25 C are 21.5 more. **The heat soak contributes more than the driving
+does**, which is the clearest argument for section 5.2's correction. At 79 a
+day, 115,000 puts end of life at 4.0 years -- mid-band.
+
+**A discrepancy, recorded rather than tuned away.** Life is inversely
+proportional to weighted exposure, so this model makes a 42 C ambient age the
+battery about 3.1 times faster than a 25 C one. That matches this project's own
+earlier measurement of ~2.9x. It is stronger than the literature's bands imply
+-- 3-5 years temperate against 2-3 hot is roughly 1.7x -- but those bands
+compare whole populations with many confounders and the ratio is not a
+like-for-like check. The model is left alone and the disagreement is stated.
 
 ### 6.3 Two rates, because a battery life is 10^8 seconds
 
@@ -244,20 +280,30 @@ required by the parent's output contract. It represents **parameter
 uncertainty, not the world model's stochastic latent**, and the sidecar says so
 in those words.
 
-## 7. ScenarioSpec
+## 7. BatteryScenario and TripSchedule
 
-Frozen dataclass, bounds-checked on construction, content-hashed for
-reproducibility. Replaces `BehaviourSpec`; no LLM, no cache, no generation.
+Two frozen dataclasses, not one, and neither is named `ScenarioSpec`.
+`collect/scenario.py` already defines a `ScenarioSpec` describing *what to
+drive*, and it already carries `ambient_temp_c` and `accessory_load_a` because
+the drive itself had to assume them. Restating those here as new truth would
+let the two drift apart with nothing noticing, so `BatteryScenario.from_sidecar`
+reads them back off the trajectory instead.
 
-    vehicle      mass_kg, cd_a, crr, alternator_rated_a
+`BatteryScenario` -- bounds-checked on construction, content-hashed:
+
+    vehicle      mass_kg, cd_a_m2, crr, air_density
+    electrical   alternator_rated_a, accessory_base_a, lights, hvac,
+                 parasitic_a, crank_a, crank_s
     battery      capacity_ah, r0_ohm, c_th_j_per_k, h_w_per_k, c_accept_per_h
-    accessories  base_a, lights, hvac
-    environment  ambient_c
-    trips        an ordered list of (trajectory, soak_s) with a crank at each start
-    seed
+    environment  ambient_c, seed
 
-The `trips` field is what gives the sulfation and parasitic pathways any data
-at all. The recorded file is one trip with zero cranks; a schedule of that trip
+`TripSchedule` -- how often that trip is driven, and how long the car sits
+between:
+
+    trips_per_day, soak_s, horizon_days
+
+The schedule is what gives the sulfation and parasitic pathways any data at
+all. The recorded file is one trip with zero cranks; a schedule of that trip
 repeated with declared soak durations produces crank events, SoC recovery
 during driving and decay during soak.
 
@@ -317,6 +363,26 @@ the parent plan's global constraints stand unchanged.
    (section 5.3), because without it two of the five aging pathways do not
    exist in the model.
 4. **The dataset is two tables, not one** (section 8).
+
+## 10a. What implementation planning changed in this spec
+
+Recorded so the reasoning is not re-litigated:
+
+1. **A dropout detector was added** (section 2). Found by profiling the
+   recording, not anticipated here. It is the single most damaging thing that
+   could have entered the pipeline silently.
+2. **Section 7 was split into `BatteryScenario` and `TripSchedule`**, and no
+   longer redeclares ambient temperature or accessory load, which
+   `collect.ScenarioSpec` already owns.
+3. **The feature/target split became explicit** (section 8). Within a trip
+   `soc = soc_0 - cumsum(i_bat_a dt) / Q` by construction, so battery channels
+   are targets and never features. A related near-identity is flagged in the
+   sidecar rather than hidden: `t_bat_c` chases `t_bay_c` with no other forcing
+   of consequence, so predicting one from the other is close to trivial. The
+   exact-relationship detector will not catch it, because the thermal lag makes
+   it approximate rather than analytic.
+4. **The trajectory is streamed, not materialised.** 181,099 rows across 48
+   columns is roughly 700 MB as dicts of floats.
 
 ## 11. Open questions inherited, not resolved
 
