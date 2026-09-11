@@ -59,7 +59,15 @@ class AbsentChannel(KeyError):
 
 
 class Sample(dict):
-    """A canonical sample that refuses to serve a column it does not have."""
+    """A canonical sample that refuses to serve a column it does not have.
+
+    An absent column is never stored as a key at all -- `_lift()` only seeds
+    the columns it can populate -- so `dict(sample)`, `.items()` and
+    `.values()` simply have no entry for it. `__getitem__` and `get()` are
+    overridden only to turn the resulting plain `KeyError` / `None` into an
+    informative `AbsentChannel` before the caller can mistake either for "the
+    column is present, its value happens to be falsy".
+    """
 
     __slots__ = ("_provenance",)
 
@@ -67,14 +75,22 @@ class Sample(dict):
         super().__init__(values)
         self._provenance = provenance
 
+    def _absent_error(self, key: str) -> AbsentChannel:
+        return AbsentChannel(
+            f"{key} is absent from this trajectory "
+            f"({LEGACY_SOURCE.get(key, '')}); it cannot be read, and a "
+            "zero here would be a silent lie"
+        )
+
     def __getitem__(self, key):
         if self._provenance.get(key) == "absent":
-            raise AbsentChannel(
-                f"{key} is absent from this trajectory "
-                f"({LEGACY_SOURCE.get(key, '')}); it cannot be read, and a "
-                "zero here would be a silent lie"
-            )
+            raise self._absent_error(key)
         return super().__getitem__(key)
+
+    def get(self, key, default=None):
+        if self._provenance.get(key) == "absent":
+            raise self._absent_error(key)
+        return super().get(key, default)
 
 
 LEGACY_SOURCE: dict[str, str] = {
@@ -85,24 +101,30 @@ LEGACY_SOURCE: dict[str, str] = {
     "vx_mps": "vel_x", "vy_mps": "vel_y", "vz_mps": "vel_z",
     "speed_mps": "speed",
     "ax_mps2": "acc_x", "ay_mps2": "acc_y", "az_mps2": "acc_z",
-    "dir_x": "cos(pitch) cos(yaw)", "dir_y": "cos(pitch) sin(yaw)",
-    "dir_z": "sin(pitch)",
     "altitude_m": "pos_z",
     # powertrain
     "rpm": "rpm",
     "throttle": "throttle",
     "gear_index": "gear",
-    "steering": "yaw_vel, scaled",
     # thermal
     "coolant_c": "engine_temp",
     "oil_c": "oil_temp",
-    "fuel_volume_l": "fuel fraction times a nominal tank",
     # assumed
     "mass_kg": f"constant {ASSUMED_MASS_KG} kg, the ETK I-Series node-mass sum",
     "engine_load": "throttle, as a stand-in; the real channel was not recorded",
+    "fuel_volume_l": (
+        "fuel fraction times a nominal tank size of "
+        f"{NOMINAL_TANK_L} L, a constant we chose -- the recording carries "
+        "no litre reading"
+    ),
     # absent
     "brake": "the recorder captured OutGauge's display1 blob instead",
     "clutch_ratio": "constant zero in the recording; never populated",
+    "steering": (
+        "the recording carries no steering channel; yaw_vel is yaw RATE, a "
+        "different physical quantity, and is not a substitute for steering "
+        "angle without speed and a vehicle model"
+    ),
     "engine_torque_nm": "not in the OutGauge shape",
     "engine_av_rads": "not in the OutGauge shape",
     "exhaust_flow": "not in the OutGauge shape",
@@ -122,6 +144,9 @@ LEGACY_SOURCE: dict[str, str] = {
     "brake_temp_rr": "not in the OutGauge shape",
     "downforce_fl": "not in the OutGauge shape",
     # derived
+    "dir_x": "cos(pitch) cos(yaw); the recording has no direction-vector column",
+    "dir_y": "cos(pitch) sin(yaw); the recording has no direction-vector column",
+    "dir_z": "sin(pitch); the recording has no direction-vector column",
     "engine_running": f"rpm > {ENGINE_RUNNING_RPM}",
     "grade_rad": "asin(dir_z)",
     "a_long_mps2": "ax_mps2 with the gravity component removed",
@@ -130,13 +155,15 @@ LEGACY_SOURCE: dict[str, str] = {
 _ABSENT = frozenset({
     "brake", "clutch_ratio", "engine_torque_nm", "engine_av_rads",
     "exhaust_flow", "ignition_level", "parkingbrake", "odometer_m", "trip_m",
-    "avg_wheel_av", "damage",
+    "avg_wheel_av", "damage", "steering",
     "wheel_av_fl", "wheel_av_fr", "wheel_av_rl", "wheel_av_rr",
     "brake_temp_fl", "brake_temp_fr", "brake_temp_rl", "brake_temp_rr",
     "downforce_fl",
 })
-_ASSUMED = frozenset({"mass_kg", "engine_load"})
-_DERIVED = frozenset({"engine_running", "grade_rad", "a_long_mps2"})
+_ASSUMED = frozenset({"mass_kg", "engine_load", "fuel_volume_l"})
+_DERIVED = frozenset({
+    "dir_x", "dir_y", "dir_z", "engine_running", "grade_rad", "a_long_mps2",
+})
 
 
 def _build_provenance() -> dict[str, str]:
@@ -159,7 +186,11 @@ LEGACY_PROVENANCE: dict[str, str] = _build_provenance()
 def _lift(raw: dict, index: int, t0: float) -> dict:
     pitch = float(raw["pitch"])
     yaw = float(raw["yaw"])
-    values = {column: 0.0 for column in COLUMNS}
+    # Seed only the columns this adapter actually populates. An absent column
+    # must never become a key here -- if it did, `dict(sample)`, `.values()`
+    # and `.get()` would all hand out a silent 0.0 for it, which is exactly
+    # the failure this module exists to prevent.
+    values = {column: 0.0 for column in COLUMNS if column not in _ABSENT}
     values.update({
         "t_s": float(raw["timestamp"]) - t0,
         "seq": float(index),
@@ -181,7 +212,6 @@ def _lift(raw: dict, index: int, t0: float) -> dict:
         "engine_load": float(raw["throttle"]),
         "gear_index": float(raw["gear"]),
         "throttle": float(raw["throttle"]),
-        "steering": float(raw["yaw_vel"]),
         "coolant_c": float(raw["engine_temp"]),
         "oil_c": float(raw["oil_temp"]),
         "fuel_volume_l": float(raw["fuel"]) * NOMINAL_TANK_L,

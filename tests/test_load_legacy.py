@@ -42,11 +42,12 @@ def test_every_canonical_column_has_a_provenance():
 
 
 def test_the_columns_this_file_cannot_supply_are_marked_absent():
-    # brake is a blob, clutch and oil_pressure are constant zero, and the rest
-    # were never in the OutGauge shape at all.
+    # brake is a blob, clutch and oil_pressure are constant zero, steering
+    # would need yaw rate plus speed and a vehicle model to reconstruct (not
+    # available), and the rest were never in the OutGauge shape at all.
     for column in (
         "brake", "clutch_ratio", "engine_torque_nm", "ignition_level",
-        "wheel_av_fl", "brake_temp_fl", "downforce_fl",
+        "wheel_av_fl", "brake_temp_fl", "downforce_fl", "steering",
     ):
         assert LEGACY_PROVENANCE[column] == "absent", column
 
@@ -54,6 +55,20 @@ def test_the_columns_this_file_cannot_supply_are_marked_absent():
 def test_mass_and_engine_load_are_assumed_not_measured():
     assert LEGACY_PROVENANCE["mass_kg"] == "assumed"
     assert LEGACY_PROVENANCE["engine_load"] == "assumed"
+
+
+def test_fuel_volume_is_assumed_not_measured():
+    # It is the recorded fuel FRACTION times a nominal tank size we chose --
+    # a constant, exactly like mass_kg, not a reading off the game.
+    assert LEGACY_PROVENANCE["fuel_volume_l"] == "assumed"
+
+
+def test_direction_vector_is_derived_not_measured():
+    # The recording has no direction-vector column; dir_x/dir_y/dir_z are
+    # trigonometry over pitch and yaw, structurally identical to grade_rad.
+    assert LEGACY_PROVENANCE["dir_x"] == "derived"
+    assert LEGACY_PROVENANCE["dir_y"] == "derived"
+    assert LEGACY_PROVENANCE["dir_z"] == "derived"
 
 
 def test_speed_and_coolant_are_measured():
@@ -68,11 +83,40 @@ def test_reading_an_absent_column_raises_rather_than_returning_zero():
         sample["brake"]
 
 
+def test_get_on_an_absent_column_raises_rather_than_returning_a_default():
+    sample = Sample({"speed_mps": 10.0}, LEGACY_PROVENANCE)
+    with pytest.raises(AbsentChannel, match="brake"):
+        sample.get("brake")
+    with pytest.raises(AbsentChannel, match="brake"):
+        sample.get("brake", "default")
+
+
 def test_samples_carry_every_canonical_column(tmp_path):
     path = _write(tmp_path, [_row(100.0), _row(100.1)])
     trajectory = read_legacy(path)
     first = next(trajectory.samples())
-    assert set(first.keys()) == set(COLUMNS)
+    non_absent = {c for c in COLUMNS if LEGACY_PROVENANCE[c] != "absent"}
+    assert set(first.keys()) == non_absent
+
+
+def test_an_absent_column_is_not_a_key_at_all(tmp_path):
+    path = _write(tmp_path, [_row(100.0)])
+    sample = next(read_legacy(path).samples())
+    assert "brake" not in sample
+    assert "brake" not in sample.keys()
+
+
+def test_absent_columns_leave_no_zero_to_leak(tmp_path):
+    # dict(sample) copies at the C level and would bypass any Python-level
+    # __getitem__ override, so the only real fix is: the key is never there.
+    path = _write(tmp_path, [_row(100.0)])
+    sample = next(read_legacy(path).samples())
+    non_absent = {c for c in COLUMNS if LEGACY_PROVENANCE[c] != "absent"}
+    plain = dict(sample)
+    assert "brake" not in plain
+    assert "brake" not in {**sample}
+    assert set(plain.keys()) == non_absent
+    assert set(k for k, _ in sample.items()) == non_absent
 
 
 def test_time_is_rebased_to_zero_at_the_first_row(tmp_path):
