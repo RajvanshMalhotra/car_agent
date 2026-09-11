@@ -294,6 +294,27 @@ git commit -m "Declare what the game does not simulate about the battery"
 
 ### Task 2: The legacy adapter and its provenance vocabulary
 
+> **AMENDED during execution — the code below carries four defects, fixed in
+> commit `200163d`. Apply these before reusing this task's code.**
+>
+> 1. **The absent-column guard is bypassable.** `_lift()` pre-fills all 48
+>    columns with `0.0` and `Sample` overrides only `__getitem__`, so
+>    `.get('brake')`, `dict(sample)['brake']`, `.values()` and `**sample` all
+>    hand out a silent zero — the exact failure the module exists to prevent.
+>    Fix by omitting absent columns from the dict entirely, so there is no zero
+>    to leak, and by raising from `get()` too. Do **not** fix it by overriding
+>    every dict accessor: `dict()` copies at C level and bypasses them.
+> 2. **`fuel_volume_l` is `assumed`, not `measured`** — it is the recorded fuel
+>    fraction times a chosen 50 L tank constant.
+> 3. **`dir_x`, `dir_y`, `dir_z` are `derived`, not `measured`** — the recording
+>    has no direction-vector column; they are trigonometry over `pitch`/`yaw`,
+>    exactly like `grade_rad`.
+> 4. **`steering` is `absent`, not `measured`** — it was filled from `yaw_vel`,
+>    which is vehicle yaw *rate*, a different physical quantity from driver
+>    steering input and not recoverable from it without speed and a vehicle
+>    model. Its `LEGACY_SOURCE` note also falsely claimed ", scaled" while the
+>    code applied none.
+
 The recorded file is the 34-column OutGauge shape, not `collect/schema.py`'s canonical 48. Lifting it is where assumptions enter the pipeline, so this is the task that has to make them legible.
 
 Three facts about the recorded file, established by profiling it and not to be rediscovered: `brake` holds a 32-byte blob because the recorder captured OutGauge's `display1` field; `oil_pressure`, `clutch` and `game_time` are constant zero; and `mass_kg`, `engine_load`, `engine_torque_nm`, `ignition_level` and the wheel and brake-temperature channels are absent entirely.
