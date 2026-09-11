@@ -133,6 +133,21 @@ def test_grade_comes_from_pitch(tmp_path):
     assert sample["grade_rad"] == pytest.approx(0.1, abs=1e-6)
 
 
+def test_a_dead_outgauge_packet_is_excluded_from_the_trajectory(tmp_path):
+    live = _row(0.0, engine_temp=100.0)
+    dead = (
+        "1.0,283.5,-713.4,148.5,0,0,0,0,0,0,"
+        "-0.11,0.03,0.99,0.03,0.0,1.56,0,0,0,"
+        "0,0,0,0,0.0,0.0,0.0,0.0,0.0,"
+        "0.0,0.0,0.0,b'\\x00',0,0"
+    )
+    path = _write(tmp_path, [live, dead])
+    trajectory = read_legacy(path)
+    kept = list(trajectory.samples())
+    assert [s["t_s"] for s in kept] == [0.0]
+    assert trajectory.dropouts.rows_excluded == 1
+
+
 def test_engine_running_is_derived_from_rpm(tmp_path):
     path = _write(tmp_path, [_row(0.0, rpm=2000.0), _row(0.1, rpm=3.0)])
     running = [s["engine_running"] for s in read_legacy(path).samples()]

@@ -36,6 +36,7 @@ from typing import Iterator
 
 from collect.derive import add_derived
 from collect.schema import COLUMNS
+from load.dropout import DropoutFilter
 
 #: The wider provenance vocabulary. `collect/schema.py` only needs the first
 #: two -- stage 1's tests pin that -- so this module carries the rest.
@@ -232,14 +233,20 @@ class Trajectory:
     def __init__(self, path: Path, provenance: dict[str, str]) -> None:
         self.source = Path(path)
         self.provenance = provenance
+        self.dropouts = DropoutFilter()
 
-    def samples(self) -> Iterator[Sample]:
+    def _raw_samples(self) -> Iterator[Sample]:
         with self.source.open(newline="") as handle:
             t0 = None
             for index, raw in enumerate(csv.DictReader(handle)):
                 if t0 is None:
                     t0 = float(raw["timestamp"])
                 yield Sample(_lift(raw, index, t0), self.provenance)
+
+    def samples(self) -> Iterator[Sample]:
+        # A fresh detector per pass, or a second read would double-count spans.
+        self.dropouts = DropoutFilter()
+        yield from self.dropouts(self._raw_samples())
 
     def at_hz(self, hz: float) -> Iterator[Sample]:
         """Every sample whose time crosses the next 1/hz boundary."""
