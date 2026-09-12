@@ -92,8 +92,8 @@ class AgingRates:
     about 79 Arrhenius-weighted hours -- 1.5 h driving with the bay near 60 C
     is 20.8 of them, an hour of post-shutdown heat soak near 75 C is another
     36.4, and the 21.5 h parked at 25 C are 21.5 more. Note that the heat soak
-    contributes more than the driving does. At 79 a day, 105,000 puts end of
-    life at 3.6 years, mid-band.
+    contributes more than the driving does. At 79 a day, 115,000 puts end of
+    life at 4.0 years, mid-band.
 
     **A recorded discrepancy, not tuned away.** Because life is inversely
     proportional to weighted exposure, this model makes a 42 C ambient age the
@@ -105,7 +105,7 @@ class AgingRates:
     left alone and the disagreement is stated.
     """
 
-    corrosion_eol_h: float = 105000.0
+    corrosion_eol_h: float = 115000.0
     corrosion_exponent: float = 0.6  # Schiffer's sublinear layer growth
     sulfation_weight: float = 0.30  # relative to a full corrosion life
     shedding_weight: float = 0.15
