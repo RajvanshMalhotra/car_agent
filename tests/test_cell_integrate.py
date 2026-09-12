@@ -3,6 +3,7 @@ import pytest
 from cell.aging import AgingRates, soh
 from cell.integrate import CellState, run_soak, run_trip
 from load.spec import BatteryScenario
+from load.thermal import bay_target_c
 
 RATES = AgingRates()
 CRUISE = BatteryScenario(name="cruise", ambient_c=25.0)
@@ -117,3 +118,66 @@ def test_a_soak_still_corrodes_because_the_bay_is_still_hot():
 def test_every_step_is_reported_once_per_interval():
     result = run_trip(_drive(600), CRUISE, CellState(), RATES, dt_s=1.0)
     assert len(result.steps) == 600
+
+
+def test_successive_trips_return_distinct_state_snapshots():
+    # TripResult.state used to be the same mutable CellState object every
+    # call, so every stored result's aging silently tracked whatever the
+    # caller's live state became later. Each result must freeze its own.
+    state = CellState()
+    first = run_trip(_drive(600), CRUISE, state, RATES)
+    second = run_trip(_drive(600), CRUISE, state, RATES)
+    assert first.state is not second.state
+    assert first.state.aging is not second.state.aging
+    assert soh(first.state.aging, RATES) != soh(second.state.aging, RATES)
+    # And the first snapshot must not have silently become the second's
+    # values just because the caller's `state` object kept accumulating.
+    assert soh(first.state.aging, RATES) > soh(second.state.aging, RATES)
+
+
+def test_an_explicit_health_overrides_the_derived_one():
+    # cell/life.py's resim-on-drift loop hands the probed trip a health value
+    # that has already drifted past the caller's own aging state. Without an
+    # override, run_trip silently re-derives health from state.aging instead,
+    # and the whole two-rate feedback loop goes inert.
+    healthy = run_trip(
+        _drive(60, running=1.0), CRUISE, CellState(), RATES,
+        cranked=True, health=1.0,
+    )
+    worn = run_trip(
+        _drive(60, running=1.0), CRUISE, CellState(), RATES,
+        cranked=True, health=0.5,
+    )
+    assert healthy.steps[0].r_int_ohm != worn.steps[0].r_int_ohm
+    assert healthy.damage.corrosion_equivalent_h != worn.damage.corrosion_equivalent_h
+
+
+def test_bay_temperature_carries_forward_across_the_trip_soak_boundary():
+    # Seeding the next BayTemperature from the battery's own temperature
+    # (which lags the bay by hours) makes the next trip start with a bay
+    # spuriously close to the battery instead of where the bay actually was.
+    state = CellState(temp_c=30.0)
+    trip = run_trip(_drive(600, coolant=101.0), CRUISE, state, RATES)
+    assert trip.state.bay_temp_c is not None
+    # The bay ran hot while driving; the battery barely moved off 30 C.
+    assert trip.state.bay_temp_c > trip.state.temp_c + 10.0
+
+
+def test_a_soak_shows_the_heat_soak_transient():
+    # The default dt_s must stay well below BAY_TAU_S (60 s): at dt_s ==
+    # BAY_TAU_S the lag clamps to alpha = 1.0 and the bay snaps straight to
+    # target, so the multi-minute post-shutdown climb never shows up.
+    driving_bay_c = bay_target_c(
+        coolant_c=101.0, speed_mps=20.0, engine_load=0.3,
+        engine_running=1.0, ambient_c=25.0,
+    )
+    state = CellState(temp_c=90.0, bay_temp_c=driving_bay_c)
+    result = run_soak(1800, CRUISE, state, RATES, initial_coolant_c=101.0)
+    trace = [step.t_bay_c for step in result.steps]
+    peak = max(trace)
+    peak_index = trace.index(peak)
+    # It rises for at least a few steps after shutdown...
+    assert peak_index >= 3
+    assert peak > trace[0]
+    # ...and then decays, rather than staying pinned at the peak.
+    assert trace[-1] < peak

@@ -48,11 +48,26 @@ class Step:
 
 @dataclass
 class CellState:
-    """What carries across trips. Health lives in `aging`, not as a bare number."""
+    """What carries across trips. Health lives in `aging`, not as a bare number.
+
+    `bay_temp_c` is the bay's own last value, carried across the trip/soak
+    boundary so the next `BayTemperature` does not get seeded from the
+    battery's temperature (which lags the bay by hours -- see the module
+    docstring). `None` means "no prior bay reading", i.e. a fresh `CellState`,
+    in which case callers seed from ambient or `temp_c` as before.
+    """
 
     soc: float = 1.0
     temp_c: float = 25.0
     aging: AgingState = field(default_factory=AgingState)
+    bay_temp_c: float | None = None
+
+    def copy(self) -> "CellState":
+        """A snapshot independent of this object -- see `TripResult.state`."""
+        return CellState(
+            soc=self.soc, temp_c=self.temp_c, aging=self.aging.copy(),
+            bay_temp_c=self.bay_temp_c,
+        )
 
 
 @dataclass(frozen=True)
@@ -120,15 +135,23 @@ def run_trip(
     rates: AgingRates,
     cranked: bool = False,
     dt_s: float = 1.0,
+    health: float | None = None,
 ) -> TripResult:
     """Integrate one trip. `samples` should already be downsampled to `dt_s`.
 
     Health is read once, at the start, and held fixed for every step -- see
     the module docstring for why. `cell/life.py` is what moves it, between
-    trips.
+    trips. By default health is derived from `state.aging` via `soh()`; pass
+    `health` explicitly to override that (`cell/life.py`'s resim-on-drift loop
+    needs this so a probed trip actually reflects the health it was asked
+    about, rather than silently re-deriving it from the caller's own aging
+    state, which is what made the two-rate feedback inert).
     """
-    bay = BayTemperature(ambient_c=scenario.ambient_c, initial_c=state.temp_c)
-    health = soh(state.aging, rates)
+    bay = BayTemperature(
+        ambient_c=scenario.ambient_c,
+        initial_c=state.bay_temp_c if state.bay_temp_c is not None else state.temp_c,
+    )
+    health = soh(state.aging, rates) if health is None else health
     steps: list[Step] = []
     total = Damage.zero()
     elapsed = 0.0
@@ -153,8 +176,9 @@ def run_trip(
         elapsed += dt_s
 
     state.aging = accumulate(state.aging, total, rates)
+    state.bay_temp_c = bay.temperature_c
     return TripResult(
-        steps=tuple(steps), damage=total, state=state, cranked=cranked
+        steps=tuple(steps), damage=total, state=state.copy(), cranked=cranked
     )
 
 
@@ -164,16 +188,27 @@ def run_soak(
     state: CellState,
     rates: AgingRates,
     initial_coolant_c: float | None = None,
-    dt_s: float = 60.0,
+    dt_s: float = 10.0,
+    health: float | None = None,
 ) -> TripResult:
     """Integrate a park: engine off, parasitic draw, and a bay that stays hot.
 
     The soak is not idle time for the battery. Immediately after shutdown the
     bay is hotter than it was while driving, and corrosion is exponential in
     temperature, so a good part of a day's damage happens in a car park.
+
+    `dt_s` defaults well below `BAY_TAU_S` (60 s) so the bay's lag is actually
+    integrated rather than snapping straight to target every tick -- at
+    `dt_s == BAY_TAU_S`, `alpha = min(1.0, dt_s / BAY_TAU_S)` is 1.0 and the
+    multi-minute heat-soak climb (see `load/thermal.py`) never happens. Pass
+    `health` to override the internally-derived value, as `run_trip` does --
+    see its docstring.
     """
-    health = soh(state.aging, rates)
-    bay = BayTemperature(ambient_c=scenario.ambient_c, initial_c=state.temp_c)
+    health = soh(state.aging, rates) if health is None else health
+    bay = BayTemperature(
+        ambient_c=scenario.ambient_c,
+        initial_c=state.bay_temp_c if state.bay_temp_c is not None else state.temp_c,
+    )
     steps: list[Step] = []
     total = Damage.zero()
     elapsed = 0.0
@@ -204,4 +239,5 @@ def run_soak(
         elapsed += step_s
 
     state.aging = accumulate(state.aging, total, rates)
-    return TripResult(steps=tuple(steps), damage=total, state=state)
+    state.bay_temp_c = bay.temperature_c
+    return TripResult(steps=tuple(steps), damage=total, state=state.copy())

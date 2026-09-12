@@ -1,9 +1,11 @@
+import csv
 import json
 
 import pytest
 
 from battery_run import build, main
 from cell.aging import AgingRates
+from cell.integrate import CellState, run_soak, run_trip
 from cell.life import TripSchedule
 from load.spec import BatteryScenario
 
@@ -101,3 +103,58 @@ def test_the_cli_runs(trajectory, tmp_path, capsys):
 def test_the_cli_reports_that_the_scale_is_unfitted(trajectory, tmp_path, capsys):
     main([str(trajectory), "--name", "cli", "--out", str(tmp_path / "d")])
     assert "unfitted" in capsys.readouterr().out.lower()
+
+
+def _day_damage(driving, scenario, schedule, rates, health):
+    # Mirrors battery_run.build's day_damage closure: a probed trip plus a
+    # probed soak, scaled to trips per day. Reproduced here rather than
+    # reaching into build()'s closure, so the test exercises the same
+    # run_trip/run_soak call pattern day_damage relies on.
+    probe = CellState(soc=1.0, temp_c=scenario.ambient_c)
+    trip = run_trip(
+        iter(driving), scenario, probe, rates, cranked=True, health=health,
+    ).damage
+    soak = run_soak(
+        schedule.soak_s, scenario, probe, rates,
+        initial_coolant_c=float(driving[-1]["coolant_c"]), health=health,
+    ).damage
+    return trip.scaled(schedule.trips_per_day) + soak.scaled(schedule.trips_per_day)
+
+
+def test_day_damage_style_output_varies_with_health():
+    # day_damage(health) used to never read `health` -- run_trip and run_soak
+    # silently re-derived it from the probe's own aging state, which is
+    # always a copy of the same constant, so the two-rate resim-on-drift loop
+    # in cell/life.py's project() fired against a fixed value forever.
+    driving = [
+        {"t_s": float(t), "speed_mps": 20.0, "rpm": 2500.0, "coolant_c": 90.0,
+         "engine_load": 0.3, "engine_running": 1.0,
+         "ax_mps2": 0.0, "ay_mps2": 0.0, "az_mps2": 9.81}
+        for t in range(600)
+    ]
+    scenario = BatteryScenario(name="t", ambient_c=25.0)
+    schedule = TripSchedule(soak_s=3600.0)
+    rates = AgingRates()
+
+    healthy = _day_damage(driving, scenario, schedule, rates, health=1.0)
+    worn = _day_damage(driving, scenario, schedule, rates, health=0.1)
+    assert healthy.corrosion_equivalent_h != worn.corrosion_equivalent_h
+
+
+def test_trip_damage_soh_column_varies_and_decreases_across_trips(
+    trajectory, tmp_path,
+):
+    # TripResult.state used to be the same mutable CellState for every trip,
+    # so every row of trip_damage.csv read the final post-loop soh. The
+    # underlying corrosion genuinely accumulates trip over trip; the column
+    # must show that instead of one repeated constant.
+    out = tmp_path / "d"
+    build(trajectory, BatteryScenario(name="t"), TripSchedule(), AgingRates(),
+          repeats=4, out_dir=out)
+    with (out / "trip_damage.csv").open() as handle:
+        soh_values = [float(row["soh"]) for row in csv.DictReader(handle)]
+    assert len(soh_values) == 4
+    assert len(set(soh_values)) == 4, f"soh column is constant: {soh_values}"
+    assert soh_values == sorted(soh_values, reverse=True), (
+        f"soh column does not decrease monotonically: {soh_values}"
+    )

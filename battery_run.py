@@ -78,10 +78,12 @@ def build(
         probe = CellState(
             soc=state.soc, temp_c=scenario.ambient_c, aging=state.aging.copy()
         )
-        trip = run_trip(iter(driving), scenario, probe, rates, cranked=True).damage
+        trip = run_trip(
+            iter(driving), scenario, probe, rates, cranked=True, health=health,
+        ).damage
         soak = run_soak(
             schedule.soak_s, scenario, probe, rates,
-            initial_coolant_c=float(driving[-1]["coolant_c"]),
+            initial_coolant_c=float(driving[-1]["coolant_c"]), health=health,
         ).damage
         return trip.scaled(schedule.trips_per_day) + soak.scaled(
             schedule.trips_per_day
