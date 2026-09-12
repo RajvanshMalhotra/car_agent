@@ -9,15 +9,20 @@ Built: `behaviour/` (spec, generator, cache, DeepSeek client), `control/` (path,
 pure pursuit, PID, driver), `sim/` (backend interface, fake backend, engine and
 thermal model, OutGauge/OutSim decoding, gamepad+UDP backend), `battery/`
 (Arrhenius grid corrosion), `datalog/` (CSV + provenance sidecar), `agent.py`,
-`windows_probe.py`, `windows_drive.py`.
+`windows_probe.py`, `windows_drive.py`. Also built now: `load/` (the legacy
+OutGauge adapter, trip segmentation, the electrical, thermal and scenario
+models) and `cell/` (ECM, ageing, 1 Hz integration, life projection, dataset
+assembly, leakage detection) -- stages 3 to 5 of the nine-stage concept are
+implemented, wired end to end by `battery_run.py`, which turns one recorded
+trajectory into a battery dataset.
 
-Not built: `campaign/` (sampling + resumable ledger), the electrical/alternator
-model for the recharge-deficit pathway, and trip cycling -- a run is one trip
-with one crank, so the sulfation pathway has no data yet. Nothing has ever run
-against the real game.
+Not built: the world model (stage 2) and the downstream networks (stages 6 and
+7). `campaign/` (sampling + resumable ledger) is also not built. Nothing has
+ever run against the real game -- `battery_run.py` has only run against a
+recorded trajectory, not a live BeamNG session.
 
 ```bash
-python3 -m pytest -q          # 227 tests, ~20 s, no network, no Windows machine
+python3 -m pytest -q -m "not slow"   # 989 passed, 8 deselected, ~70 s, no network, no Windows machine
 ./agent.py list               # cached behaviours
 ./agent.py drive <name|hash>  # run one through the fake backend
 export DEEPSEEK_API_KEY=...   # only needed for `./agent.py generate`

@@ -135,10 +135,29 @@ Output lands in `runs/`:
 Everything except `windows_*.py` runs anywhere, against a kinematic fake backend:
 
 ```
-python3 -m pytest -q        # 227 tests, ~20 s, no network, no game
+python3 -m pytest -q -m "not slow"   # 989 passed, 8 deselected, ~70 s, no network, no game
 ./agent.py list
 ./agent.py drive "Delhi Courier"
 ```
+
+`-m "not slow"` matters: one test trains a policy over roughly 288,000
+simulated seconds and takes hours. Run it deliberately with `-m slow`, never
+by default.
+
+Turn a recorded drive into a battery dataset -- state of charge, voltage,
+under-bonnet temperature and remaining-life estimate, at 1 Hz plus one row per
+trip:
+
+```
+python3 battery_run.py runs/telemetry.csv --name baseline --ambient 25 --out runs/baseline
+```
+
+The recorded trip is repeated (`--repeats`, default 4) under a declared trip
+schedule, because the sulfation and parasitic-drain pathways need more than
+one crank to show anything. The scale is unfitted -- no battery in this
+project has reached end of life -- so absolute days are indicative; compare
+two scenarios (e.g. `--ambient 42 --hvac 1.0 --lights`) and the ratio between
+them is the claim that survives the unfitted constant.
 
 Generating new behaviours needs a DeepSeek key:
 
