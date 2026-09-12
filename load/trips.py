@@ -20,7 +20,7 @@ single dropped sample. `MIN_SOAK_S` is what separates a park from a stumble.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Iterable
+from typing import Any, Iterable
 
 #: Shorter than this and the engine did not really stop.
 MIN_SOAK_S = 5.0
@@ -34,9 +34,9 @@ class Segment:
     cranked: bool
 
 
-def _runs(samples: Iterable) -> list[list]:
+def _runs(samples: Iterable[dict[str, Any]]) -> list[list[Any]]:
     """Collapse samples into [running, start_s, end_s] runs."""
-    runs: list[list] = []
+    runs: list[list[Any]] = []
     for sample in samples:
         running = float(sample["engine_running"]) >= 0.5
         t = float(sample["t_s"])
@@ -47,29 +47,50 @@ def _runs(samples: Iterable) -> list[list]:
     return runs
 
 
-def segment(samples: Iterable, min_soak_s: float = MIN_SOAK_S) -> list[Segment]:
+def segment(samples: Iterable[dict[str, Any]], min_soak_s: float = MIN_SOAK_S) -> list[Segment]:
     """Cut a trajectory into trips and soaks, marking which trips were cranked."""
     runs = _runs(samples)
     if not runs:
         return []
 
-    # Absorb too-short stops back into the trip around them.
-    merged: list[list] = []
+    # Pass 1: Absorb too-short stops backward into preceding trips.
+    merged: list[list[Any]] = []
     for run in runs:
         running, start, end = run
         too_short = (not running) and (end - start) < min_soak_s
         if too_short and merged and merged[-1][0]:
+            # Absorb backward into preceding trip
             merged[-1][2] = end
             continue
         if merged and merged[-1][0] == running:
+            # Merge consecutive same-state runs
             merged[-1][2] = end
             continue
         merged.append(list(run))
 
+    # Pass 2: Absorb too-short stops forward into following trips.
+    # This handles leading dips that have no preceding trip to absorb into.
+    final: list[list[Any]] = []
+    i = 0
+    while i < len(merged):
+        run = merged[i]
+        running, start, end = run
+        too_short = (not running) and (end - start) < min_soak_s
+
+        if too_short and i + 1 < len(merged):
+            # Absorb forward: extend the next run's start back to include this dip
+            next_run = merged[i + 1]
+            next_run[1] = start
+            i += 1
+            continue
+
+        final.append(run)
+        i += 1
+
     segments: list[Segment] = []
-    for index, (running, start, end) in enumerate(merged):
+    for index, (running, start, end) in enumerate(final):
         # A trip is cranked only if we watched the engine stop beforehand.
-        cranked = bool(running and index > 0 and not merged[index - 1][0])
+        cranked = bool(running and index > 0 and not final[index - 1][0])
         segments.append(
             Segment(
                 kind="trip" if running else "soak",

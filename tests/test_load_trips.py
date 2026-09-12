@@ -58,3 +58,32 @@ def test_segments_cover_the_whole_trajectory_without_gaps():
         assert later.start_s > earlier.end_s
     assert segments[0].start_s == pytest.approx(0.0)
     assert segments[-1].end_s == pytest.approx(89.0)
+
+
+def test_a_leading_dip_shorter_than_min_soak_does_not_split_or_crank():
+    # The absorb-backward check requires a preceding trip, and at position 0
+    # there is none. A leading sub-MIN_SOAK_S dip used to survive as a
+    # standalone soak and wrongly mark the following trip as cranked --
+    # inventing a 350 A crank event out of a sub-threshold glitch.
+    segments = segment(_run([(False, 2), (True, 30)]))
+    assert [s.kind for s in segments] == ["trip"]
+    assert segments[0].cranked is False
+    assert crank_times(segments) == ()
+
+
+def test_a_leading_dip_at_least_min_soak_is_still_a_genuine_soak():
+    # The fix for the position-0 bug must not swing the other way and start
+    # absorbing real leading parks just because they come first.
+    segments = segment(_run([(False, 10), (True, 20)]))
+    assert [s.kind for s in segments] == ["soak", "trip"]
+    assert segments[1].cranked is True
+    assert crank_times(segments) == (10.0,)
+
+
+def test_a_trajectory_of_only_a_short_dip_does_not_crash():
+    # No following trip to absorb into. Must not raise (a naive forward-only
+    # fix can index past the end of the run list here) and must not
+    # fabricate a crank out of nothing.
+    segments = segment(_run([(False, 2)]))
+    assert [s.kind for s in segments] == ["soak"]
+    assert crank_times(segments) == ()
