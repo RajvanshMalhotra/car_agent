@@ -1,5 +1,11 @@
 """Turning driving into battery current and voltage.
 
+`load/electrical.py` is the offline successor to this module and duplicates
+`PULLEY_RATIO`, `CUT_IN_SHAFT_RPM`, `FULL_OUTPUT_SHAFT_RPM`,
+`REGULATED_VOLTAGE_V`, `LIGHTS_LOAD_A`, `HVAC_LOAD_A` and the alternator
+formula -- kept in step by hand, not by import. This module stays only because
+`sim/fake.py` and `sim/mcp_backend.py` still import its `ElectricalModel`.
+
 This is the interface the whole downstream argument rests on. The real dataset's
 usable columns are current and voltage; the simulator produces neither. Until
 driving is converted into current, the simulated and measured data do not share

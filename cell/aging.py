@@ -103,6 +103,20 @@ class AgingRates:
     hot, roughly 1.7x). Those bands compare whole populations with many
     confounders and the ratio is not a like-for-like check, so the model is
     left alone and the disagreement is stated.
+
+    **A second, uncorrected discrepancy: `corrosion_eol_h` was derived from
+    engine-bay temperatures, but corrosion is evaluated at battery temperature.**
+    The 115,000 above comes from a day at the *bay* (60 C driving, 75 C heat
+    soak, 25 C parked). `cell/integrate.py` evaluates `corrosion_rate` at
+    `T_bat`, which lags the bay by `C_th/h` (about 7500 s) and, on the real
+    recording, peaks at only 31-38 C while the bay reaches 90-118 C -- measured
+    exposure is 24.9 weighted h/day, about 0.32x what the constant assumed.
+    Absolute lives it produces therefore read roughly 3x too long. Ratios
+    between scenarios are unaffected, since both sides of a ratio carry the
+    same bias. Left alone for the same reason as above: retuning an unfitted
+    constant to match one duty cycle is fitting to a sample of one, and a
+    future refit must reconcile bay-vs-battery temperature before this
+    constant means what its derivation claims.
     """
 
     corrosion_eol_h: float = 115000.0

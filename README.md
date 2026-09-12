@@ -176,6 +176,8 @@ export DEEPSEEK_API_KEY=...
 | `control/` | Path, pure-pursuit steering, PID speed, the driver that executes a spec |
 | `sim/` | Backend interface, fake kinematic backend, engine/thermal model, OutGauge / MotionSim / OutSim decoding, gamepad+UDP backend |
 | `battery/` | Arrhenius grid-corrosion estimator |
+| `load/` | Recorded/simulated driving to battery current and engine-bay temperature: mechanical load, thermal lag, electrical (alternator, charge acceptance, accessories), trip/crank segmentation, the legacy OutGauge adapter |
+| `cell/` | The 1 Hz within-trip cell model (SoC, voltage, temperature, resistance), per-trip ageing (corrosion, sulfation, shedding), the trip-schedule life projection, and the two-table dataset writer |
 | `datalog/` | CSV writer + provenance sidecar |
 | `campaign/` | *(empty — sampling and resumable ledger not built)* |
 
@@ -188,14 +190,18 @@ before changing anything structural.
 
 **Does:** generate and validate behaviours offline; drive them faithfully
 (acceleration, jerk and corner limits respected, ~2 cm path tracking); estimate
-under-bonnet temperature; integrate grid corrosion.
+under-bonnet temperature; integrate grid corrosion; model the alternator and
+charge acceptance and turn a driving trace into battery current, voltage and
+ageing state (`load/`, `cell/`).
 
 **Does not, yet:**
 
-- No electrical/alternator model, so the **recharge-deficit** ageing pathway
-  produces no data.
-- A run is one trip with one crank, so the **sulfation** pathway produces no
-  data either.
+- The **recharge-deficit** pathway now has data -- an idling, hot, HVAC-and-
+  lights-on scenario measures a ~34.2 A deficit the alternator cannot cover --
+  but the **sulfation** pathway still has essentially none: on the real
+  recording `low_soc_hours` is 0.0 on every trip, because state of charge
+  never drops below the 0.9 threshold. It needs a schedule with trips harder
+  or longer than the one recording available today.
 - `idle_fraction` is recorded but not enforced during a run.
 - Nothing has ever been run against the real game.
 

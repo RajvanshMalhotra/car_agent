@@ -181,7 +181,12 @@ def write_dataset(
             "uncertainty_source": life.uncertainty_source,
             "note": (
                 "The ageing rate constant is not fitted against full-life data. "
-                "Ratios between scenarios are usable; absolute days are not."
+                "Ratios between scenarios are usable; absolute days are not. "
+                "It was also derived from engine-bay exposure but is evaluated "
+                "at battery temperature, which lags and runs cooler, so on the "
+                "recorded scenario measured exposure is about 0.32x what the "
+                "constant assumed and absolute days read roughly 3x too long "
+                "-- see AgingRates in cell/aging.py."
             ),
         },
         "ageing_rates": asdict(rates),
