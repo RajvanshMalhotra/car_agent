@@ -46,15 +46,7 @@ class UnfittedScale(RuntimeError):
 class TripSchedule:
     trips_per_day: float = 2.0
     soak_s: float = 28800.0
-    # 20 years: a simulation ceiling, not a physical claim. It has to clear
-    # scenarios far lighter than "ordinary use" -- e.g. a single short recorded
-    # trip repeated under this same default schedule, which under-fills a day
-    # (a couple of minutes of driving plus one soak, not the ~24 h the ageing
-    # constant was anchored against) and so ages many times slower than
-    # ORDINARY_DAY_H. 10 years was too tight for that case: a real but light
-    # scenario would silently read as "never reaches end of life" instead of
-    # producing the (long, honestly-caveated) number it should.
-    horizon_days: float = 7300.0
+    horizon_days: float = 3650.0
 
     def __post_init__(self) -> None:
         if self.trips_per_day <= 0.0:

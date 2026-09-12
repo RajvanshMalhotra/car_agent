@@ -74,10 +74,20 @@ def test_physical_bounds_hold(trajectory, tmp_path):
 
 
 def test_a_hot_ambient_ages_it_faster_than_a_cool_one(trajectory, tmp_path):
+    # This fixture's 120 s trip under the default schedule under-fills a day
+    # (a couple of minutes of driving plus one soak, not the ~24 h the ageing
+    # constant is anchored against), so the 25 C scenario needs about 6063
+    # days to reach end of life -- past the production 3650-day horizon. The
+    # override is local to this test only: it does not relax the production
+    # ceiling (cell/life.py's default stays 3650), which exists precisely to
+    # catch an unrealistic multi-decade life. Do not delete this override
+    # without checking that "cool" still reaches an eol_days at all.
+    schedule = TripSchedule(horizon_days=8000.0)
     cool = build(trajectory, BatteryScenario(name="c", ambient_c=25.0),
-                 TripSchedule(), AgingRates(), 2, tmp_path / "cool")
+                 schedule, AgingRates(), 2, tmp_path / "cool")
     hot = build(trajectory, BatteryScenario(name="h", ambient_c=42.0),
-                TripSchedule(), AgingRates(), 2, tmp_path / "hot")
+                schedule, AgingRates(), 2, tmp_path / "hot")
+    assert cool["life"]["eol_days"] is not None
     assert hot["life"]["eol_days"] < cool["life"]["eol_days"]
 
 
