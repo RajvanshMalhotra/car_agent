@@ -10,14 +10,11 @@ Three tables come out, for the same reason `cell/dataset.py` emits two: the
 three different granularities, and broadcasting a per-scenario constant
 across thousands of near-identical rows is recoverable from the row index.
 
-    within_trip.csv     1 Hz, every (ambient, trip_minutes) combination,
-                        tagged with `scenario`. The driving channels are
-                        identical across scenarios sharing an (ambient,
-                        trip_minutes) pair by construction -- the same
-                        recording is replayed, truncated the same way -- so
-                        what varies is the battery response.
-    scenario_life.csv   one row per full scenario: the declared axes, the
-                        damage it accumulated per day, the terminal ageing
+    within_trip.csv     1 Hz, one reference replay per ambient of the full
+                        (untruncated) recording -- see "Why within_trip.csv
+                        stopped varying with trip_minutes" below.
+    scenario_life.csv   one row per full scenario: the sampled axes, the
+                        damage accumulated per day, the terminal ageing
                         state, and where end of life landed.
     aging_trajectory.csv one row per scenario per sampled day: how the hidden
                         ageing state (crystal, corrosion_hours, shedding) and
@@ -25,20 +22,43 @@ across thousands of near-identical rows is recoverable from the row index.
                         they ended up. This is what a counterfactual rollout
                         gets compared against.
 
-**Why sulfation needed new axes, not just more of the old ones.** A 20-minute
-trip fully recovers its own crank and charge acceptance self-stabilises near
-0.99, so `low_soc_hours` -- the only thing that makes the sulfation crystal
-state move at all -- was identically zero across the original ambient x
-schedule x accessories grid. None of those three axes ever depresses SoC
-below `LOW_SOC` on the driving side. Four things do, and they are the new
-axes below: very short trips that do not recover their own crank
-(`TRIP_MINUTES`), an occasional long park (`LAYUP_DAYS`), a heavier key-off
-draw (`PARASITIC_A`), and cold ambient collapsing charge acceptance (folded
-into the trimmed `AMBIENTS_C`). `ACCESSORIES` is dropped entirely -- it moved
-life by about two days out of a thousand in the prior sweep, i.e. noise, and
-every day of it spent looping is a day not spent on axes that move sulfation.
-`SCHEDULES` is fixed to one representative pattern rather than swept, for the
-same budget reason -- see the axis constants below for what stays and why.
+**Why the sulfation-driving axes are sampled continuously, not gridded.** A
+first version of this sweep used discrete grid points for trip length, layup
+duration and parasitic draw (4x3x2). That made `low_soc_hours` non-zero in
+72% of scenarios, which looked like success -- until the terminal `crystal`
+distribution was inspected: 27/96 scenarios sat at exactly 0.0, 65/96 sat
+above 0.9, and only 4/96 landed anywhere in between. The state was
+effectively BINARY (sulfating or not), driven almost entirely by whether
+`layup_days > 0` at all (64/64 layup scenarios sulfated, only 5/32 non-layup
+ones did through an emergent health-feedback route). A counterfactual-
+abduction experiment scored against a binary hidden state collapses to a
+trivially easy classification and would tell a reviewer about the sampling
+design, not the model being tested.
+
+The fix is to sample the pressure that drives sulfation from continuous
+distributions rather than a handful of grid points, so that "how much did
+this scenario sulfate" varies smoothly rather than switching on and off:
+`TRIP_MINUTES_RANGE`, `LAYUP_DAYS_RANGE`, `LAYUP_GAP_DAYS_RANGE` and
+`PARASITIC_A_RANGE` below, drawn per scenario by a seeded `random.Random`
+(`SCENARIO_SAMPLING_SEED`, recorded in the sidecar for reproducibility).
+`AMBIENTS_C` stays a discrete grid -- it is the dominant corrosion axis and
+the point is to cross it against the continuously-sampled sulfation
+pressure, not to smooth it too.
+
+**Why within_trip.csv stopped varying with trip_minutes.** With trip length
+now a continuously-sampled per-scenario value instead of 4 grid points, no
+two scenarios share an exact truncation to de-duplicate on, and emitting the
+full driving trace once per scenario would multiply row count by the
+scenario count for no benefit -- the recording itself does not change,
+`load/trips.py`'s truncation of it does, and a downstream consumer that
+wants a specific scenario's truncated trace can slice the one reference
+recording at that scenario's own `trip_minutes` (in `scenario_life.csv`)
+without loading a private copy per scenario. So `within_trip.csv` now holds
+one full-length (untruncated) reference replay per ambient only.
+
+`ACCESSORIES` and `SCHEDULES` remain dropped/fixed from the previous
+revision -- neither ever moved `low_soc_hours` off zero; see the axis
+constants below.
 
 Absolute days remain unfitted. Ratios between rows are the usable output.
 """
@@ -48,6 +68,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import random
 import subprocess
 import sys
 import time
@@ -62,70 +83,77 @@ from load.legacy import LEGACY_PROVENANCE, read_legacy
 from load.spec import BatteryScenario
 from load.trips import segment
 
-#: The dominant ageing axis, per the project's own measurements. Trimmed from
-#: five points to four, but widened downward: -10 C is cold enough to
-#: collapse charge acceptance (`load/electrical.py`'s `acceptance_temperature_
-#: factor` reaches its floor by -10 C), which is what lets a short, cold trip
-#: fail to recover its own crank -- ROUTE 3 in the driving brief. 50 C was
-#: dropped as redundant with 42 C for corrosion purposes; both are well past
-#: the Arrhenius knee and the ratio between them is not where the interesting
-#: behaviour is.
+#: The dominant ageing axis, per the project's own measurements. Kept as a
+#: discrete grid -- crossed against the continuously-sampled sulfation
+#: pressure below, not smoothed itself. -10 C is cold enough to collapse
+#: charge acceptance (`load/electrical.py`'s `acceptance_temperature_factor`
+#: reaches its floor by -10 C); 42 C is well past the Arrhenius knee for
+#: corrosion.
 AMBIENTS_C = (-10.0, 10.0, 25.0, 42.0)
 
+#: How many continuously-sampled scenarios per ambient point. Each is cheap
+#: (a few seconds -- see `--one`'s timing report), so a few hundred total
+#: scenarios costs tens of minutes, not hours.
+SCENARIOS_PER_AMBIENT = 80
+
+#: Seeds the per-scenario draws of trip length, layup length, layup gap and
+#: parasitic draw below, so the whole sweep is reproducible from this one
+#: number. Recorded in the sidecar.
+SCENARIO_SAMPLING_SEED = 0
+
 #: How much of the recorded ~1192 s (20 min) trip is actually driven before
-#: the engine is shut off again. Short trips do not run long enough for
-#: charge acceptance to put back what the crank took -- this is the ROUTE 2
-#: pathway, and it was entirely absent from the original sweep because every
-#: scenario replayed the full recording.
-TRIP_MINUTES = (2.0, 5.0, 10.0, 20.0)
+#: the engine is shut off again, sampled uniformly per scenario. Short trips
+#: do not run long enough for charge acceptance to put back what the crank
+#: took -- the ROUTE 2 pathway. 20.0 covers the whole recording; 1.5 is
+#: short enough to leave a real dent even before any layup is applied.
+TRIP_MINUTES_RANGE = (1.5, 20.0)
 
-#: An occasional long park on top of the normal daily soak, e.g. a business
-#: trip, holiday, or seasonal layup -- ROUTE 1. 0 means the car is never left
-#: standing beyond its normal daily soak.
-LAYUP_DAYS = (0.0, 7.0, 21.0)
+#: Length of an occasional long park on top of the normal daily soak, e.g. a
+#: business trip, holiday, or seasonal layup -- ROUTE 1. Sampled uniformly
+#: per scenario; a draw near 0 degrades smoothly into "no layup" by
+#: construction -- see `run_scenario`'s `day_damage`, which has no special
+#: case for `layup_days == 0` any more (the period-average formula reduces
+#: to it exactly).
+LAYUP_DAYS_RANGE = (0.0, 30.0)
 
-#: How often a layup happens, in days. `run_scenario` folds "one `layup_days`
-#: -long park every `LAYUP_PERIOD_DAYS`" into a single per-day-average damage
-#: figure -- see its docstring for why an average, not a literal calendar
+#: Ordinary days BETWEEN layups (not the full cycle length -- the full cycle
+#: is this plus the sampled `layup_days` itself), sampled uniformly per
+#: scenario. `run_scenario` folds "one `layup_days`-long park every
+#: `layup_days + layup_gap_days`" into a single per-day-average damage figure
+#: -- see its docstring for why an average, not a literal calendar
 #: simulation, is what `cell/life.py.project()`'s per-day abstraction can
-#: consume. 60 days (about two months) keeps the parked fraction of time
-#: plausible: 7/60 = 12% for the light case, 21/60 = 35% for the heavy one --
-#: a lot, but this axis exists specifically to reach the continuous-park
-#: regime ROUTE 1 was measured in, not to be subtle about it.
-LAYUP_PERIOD_DAYS = 60.0
+#: consume.
+LAYUP_GAP_DAYS_RANGE = (20.0, 120.0)
 
-#: Coarse enough to keep a 21-day layup's soak integration cheap (6048 steps
-#: instead of 181440 at the usual 10 s), fine enough that the bay's ~60 s time
-#: constant is still resolved for the first hour, which is all that matters
-#: on a soak lasting weeks.
+#: Coarse enough to keep a 30-day layup's soak integration cheap (~8640 steps
+#: instead of ~259200 at the usual 10 s), fine enough that the bay's ~60 s
+#: time constant is still resolved for the first hour, which is all that
+#: matters on a soak lasting weeks.
 LAYUP_SOAK_DT_S = 300.0
 
-#: Key-off draw: alarm, clock, ECU keep-alive -- ROUTE 4. 0.03 A is
-#: `BatteryScenario`'s own default (an old, well-behaved car); 0.08 A is a
-#: modern one with more always-on electronics. The brief's own numbers show
-#: this axis is one of the strongest levers on parked SoC (0.03 A/14 d -> 0.832,
-#: 0.08 A/14 d -> 0.552), stronger than trip length or layup duration, so it
-#: gets two points despite the tight scenario budget.
-PARASITIC_A = (0.03, 0.08)
+#: Key-off draw: alarm, clock, ECU keep-alive -- ROUTE 4. Sampled uniformly
+#: per scenario over roughly an old, well-behaved car (`BatteryScenario`'s
+#: own default is 0.03 A) to a modern one with more always-on electronics.
+PARASITIC_A_RANGE = (0.02, 0.10)
 
 #: Fixed rather than swept: a plain daily commute, two trips with an 8 h soak
-#: between them. `SCHEDULES` varied trip frequency and soak length in the
-#: original sweep, but neither axis ever moved `low_soc_hours` off zero --
-#: the actual sulfation-relevant lever is TRIP_MINUTES (whether a trip
-#: recovers its own crank at all), not how many such trips happen per day.
-#: Keeping one representative schedule buys the budget for the three new
-#: axes instead of a fourth cross-product dimension that does not move the
-#: pathway this sweep exists to unlock.
+#: between them. `SCHEDULES` varied trip frequency and soak length in an
+#: earlier revision, but neither axis ever moved `low_soc_hours` off zero --
+#: the actual sulfation-relevant levers are trip length, layup and parasitic
+#: draw, not how many ordinary trips happen per day.
 SCHEDULE_TRIPS_PER_DAY = 2.0
 SCHEDULE_SOAK_H = 8.0
 
-WITHIN_COLUMNS = (
-    ("scenario", "ambient_c", "trip_minutes", "trip", "t_s") + FEATURES + TARGETS
-)
+#: Trip length used for the `within_trip.csv` reference replay -- the full
+#: recording, untruncated. See the module docstring for why this table no
+#: longer varies with each scenario's own (continuously-sampled) trip length.
+REFERENCE_TRIP_MINUTES = 20.0
+
+WITHIN_COLUMNS = (("scenario", "ambient_c", "trip", "t_s") + FEATURES + TARGETS)
 
 LIFE_COLUMNS = (
-    "scenario", "ambient_c", "trip_minutes", "layup_days", "parasitic_a",
-    "trips_per_day", "soak_h",
+    "scenario", "ambient_c", "trip_minutes", "layup_days", "layup_gap_days",
+    "parasitic_a", "trips_per_day", "soak_h",
     "corrosion_equivalent_h_per_day", "ah_throughput_per_day",
     "low_soc_hours_per_day", "full_charge_hours_per_day", "vibration_dose_per_day",
     "soc_after_repeats", "soh_after_repeats",
@@ -180,12 +208,13 @@ def truncate_driving(driving, minutes):
 
 
 def run_scenario(driving, ambient_c, trips_per_day, soak_h, trip_minutes,
-                 layup_days, parasitic_a, repeats, rates, draws, seed):
+                 layup_days, layup_gap_days, parasitic_a, repeats, rates,
+                 draws, seed):
     """One scenario: integrate `repeats` trips, then project a life.
 
-    `layup_days` folds an occasional long park into the per-day damage
-    average -- see the module docstring and `LAYUP_PERIOD_DAYS` above for
-    why an average rather than a literal calendar simulation.
+    `layup_days` and `layup_gap_days` fold an occasional long park into the
+    per-day damage average -- see the module docstring for why an average
+    rather than a literal calendar simulation.
     """
     trip_samples = truncate_driving(driving, trip_minutes)
     scenario = BatteryScenario(
@@ -219,49 +248,52 @@ def run_scenario(driving, ambient_c, trips_per_day, soak_h, trip_minutes,
         soc_end = max(0.0, min(1.0, day_start.soc + cycle_delta * trips_per_day))
         return damage, soc_end
 
-    if layup_days <= 0.0:
-        day_damage = normal_day
-    else:
-        def day_damage(day_start):
-            """A period average: ordinary days, plus one long park.
+    def day_damage(day_start):
+        """A period average: `layup_gap_days` ordinary days, plus one park.
 
-            `cell.life.project` advances health one calendar day per call and
-            holds whatever `Damage` a probe returns fixed until the next
-            resim -- it has no notion of "this specific day is the layup
-            day". So a periodic occasional-long-park pattern is folded into a
-            single per-day-average `Damage` here instead: simulate the
-            `LAYUP_PERIOD_DAYS - layup_days` ordinary days at the steady
-            daily SoC (one call stands in for all of them, since consecutive
-            ordinary days converge to nearly the same SoC), then the
-            continuous `layup_days`-long park itself, sum the damage over the
-            whole period and divide by its length.
+        `cell.life.project` advances health one calendar day per call and
+        holds whatever `Damage` a probe returns fixed until the next resim --
+        it has no notion of "this specific day is the layup day". So a
+        periodic occasional-long-park pattern is folded into a single
+        per-day-average `Damage` here instead: simulate `layup_gap_days`
+        ordinary days at the steady daily SoC (one call stands in for all of
+        them, since consecutive ordinary days converge to nearly the same
+        SoC), then the continuous `layup_days`-long park itself, sum the
+        damage over the whole `layup_gap_days + layup_days` cycle and divide
+        by its length.
 
-            This does NOT flatten the hidden state itself: `accumulate()`
-            still runs once per calendar day inside `project`'s own loop, so
-            `crystal` still grows and saturates day by day against whatever
-            average rate this returns. Only the INPUT rate is smoothed across
-            the period, not the state evolution -- the thing the downstream
-            counterfactual experiment needs to stay path-dependent.
+        No special case for `layup_days == 0`: `layup_gap_days` ordinary days
+        plus a zero-length park (whose `run_soak` call trivially integrates
+        zero seconds and returns `Damage.zero()`) divided by `layup_gap_days`
+        is exactly `normal_day`'s own damage and SoC -- the layup pressure
+        degrades smoothly to "none" rather than switching off at a boundary.
 
-            The returned SoC is the value right after the park: the most
-            depleted point in the period, and the point the layup's own
-            `low_soc_hours` was actually earned against.
-            """
-            normal_damage, soc_after_normal = normal_day(day_start)
-            ordinary_days = max(0.0, LAYUP_PERIOD_DAYS - layup_days)
-            total = normal_damage.scaled(ordinary_days)
+        This does NOT flatten the hidden state itself: `accumulate()` still
+        runs once per calendar day inside `project`'s own loop, so `crystal`
+        still grows and saturates day by day against whatever average rate
+        this returns. Only the INPUT rate is smoothed across the cycle, not
+        the state evolution -- the thing the downstream counterfactual
+        experiment needs to stay path-dependent.
 
-            park = CellState(
-                soc=soc_after_normal, temp_c=ambient_c, aging=state.aging.copy()
-            )
-            parked = run_soak(
-                layup_days * 86400.0, scenario, park, rates,
-                initial_coolant_c=last_coolant, dt_s=LAYUP_SOAK_DT_S,
-                health=day_start.health,
-            )
-            total = total + parked.damage
-            avg_damage = total.scaled(1.0 / LAYUP_PERIOD_DAYS)
-            return avg_damage, park.soc
+        The returned SoC is the value right after the park (or after the
+        ordinary day, when `layup_days == 0`): the most depleted point in the
+        cycle, and the point `low_soc_hours` was actually earned against.
+        """
+        normal_damage, soc_after_normal = normal_day(day_start)
+        cycle_days = layup_gap_days + layup_days
+        total = normal_damage.scaled(layup_gap_days)
+
+        park = CellState(
+            soc=soc_after_normal, temp_c=ambient_c, aging=state.aging.copy()
+        )
+        parked = run_soak(
+            layup_days * 86400.0, scenario, park, rates,
+            initial_coolant_c=last_coolant, dt_s=LAYUP_SOAK_DT_S,
+            health=day_start.health,
+        )
+        total = total + parked.damage
+        avg_damage = total.scaled(1.0 / cycle_days)
+        return avg_damage, park.soc
 
     life = ensemble(day_damage, rates, schedule, draws=draws, seed=seed,
                     soc0=state.soc)
@@ -272,6 +304,30 @@ def run_scenario(driving, ambient_c, trips_per_day, soak_h, trip_minutes,
     # silently miss it. See cell/life.py's docstring on the field.
     per_day = life.avg_damage_per_day
     return scenario, schedule, trips, life, per_day, state, trip_samples
+
+
+def reference_trip_rows(driving, ambient_c, rates, repeats, seed):
+    """One full-length replay per ambient, for `within_trip.csv`.
+
+    Independent of any scenario's own (continuously-sampled) trip length --
+    see the module docstring for why. Uses the sweep's default parasitic
+    draw purely as a fixed illustrative value; it does not affect a trip's
+    own driving channels, only the soak between trips.
+    """
+    trip_samples = truncate_driving(driving, REFERENCE_TRIP_MINUTES)
+    scenario = BatteryScenario(
+        name=f"ref_a{ambient_c:g}", ambient_c=ambient_c, seed=seed,
+    )
+    last_coolant = float(trip_samples[-1]["coolant_c"])
+    state = CellState(temp_c=ambient_c)
+    trips = []
+    for index in range(repeats):
+        result = run_trip(iter(trip_samples), scenario, state, rates, cranked=index > 0)
+        trips.append(result)
+        if index < repeats - 1:
+            run_soak(SCHEDULE_SOAK_H * 3600.0, scenario, state, rates,
+                     initial_coolant_c=last_coolant)
+    return trips, trip_samples
 
 
 def main(argv=None) -> int:
@@ -296,17 +352,18 @@ def main(argv=None) -> int:
     if args.one:
         start = time.time()
         run_scenario(driving, 25.0, SCHEDULE_TRIPS_PER_DAY, SCHEDULE_SOAK_H,
-                     20.0, 21.0, 0.08, args.repeats, rates, args.draws, 0)
-        print(f"one scenario (layup) took {time.time() - start:.1f} s", flush=True)
-        total = len(AMBIENTS_C) * len(TRIP_MINUTES) * len(LAYUP_DAYS) * len(PARASITIC_A)
+                     20.0, 30.0, 20.0, 0.08, args.repeats, rates, args.draws, 0)
+        print(f"one scenario (30-day layup, worst case) took "
+              f"{time.time() - start:.1f} s", flush=True)
+        total = len(AMBIENTS_C) * SCENARIOS_PER_AMBIENT
         print(f"full sweep is {total} scenarios "
-              f"~= {(time.time() - start) * total / 60:.1f} min", flush=True)
+              f"~= {(time.time() - start) * total / 60:.1f} min (upper bound; "
+              f"most draws are cheaper than this worst case)", flush=True)
         return 0
 
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
     within_rows, life_rows, aging_rows = [], [], []
-    seen_within = set()
     index = 0
     started = time.time()
 
@@ -316,103 +373,99 @@ def main(argv=None) -> int:
     # stay exact regardless of --noise-scale.
     noise = SensorNoise(seed=args.noise_seed, scale=args.noise_scale)
 
-    total_scenarios = len(AMBIENTS_C) * len(TRIP_MINUTES) * len(LAYUP_DAYS) * len(PARASITIC_A)
+    total_scenarios = len(AMBIENTS_C) * SCENARIOS_PER_AMBIENT
+    sampling_rng = random.Random(SCENARIO_SAMPLING_SEED)
 
     for ambient_c in AMBIENTS_C:
-        for trip_minutes in TRIP_MINUTES:
-            for layup_days in LAYUP_DAYS:
-                for parasitic_a in PARASITIC_A:
-                    name = (
-                        f"amb{ambient_c:g}_trip{trip_minutes:g}m_"
-                        f"layup{layup_days:g}d_par{parasitic_a:g}A"
+        # One reference replay per ambient for within_trip.csv -- see the
+        # module docstring for why this no longer varies per scenario.
+        ref_trips, ref_samples = reference_trip_rows(
+            driving, ambient_c, rates, args.repeats, seed=index,
+        )
+        wname = f"amb{ambient_c:g}_reference"
+        for trip_index, result in enumerate(ref_trips):
+            for sample, step in zip(ref_samples, result.steps):
+                row = {
+                    "scenario": wname, "ambient_c": ambient_c,
+                    "trip": trip_index, "t_s": step.t_s,
+                }
+                for column in FEATURES:
+                    row[column] = (
+                        step.t_bay_c if column == "t_bay_c" else float(sample[column])
                     )
-                    scenario, schedule, trips, life, per_day, state, trip_samples = (
-                        run_scenario(
-                            driving, ambient_c, SCHEDULE_TRIPS_PER_DAY,
-                            SCHEDULE_SOAK_H, trip_minutes, layup_days,
-                            parasitic_a, args.repeats, rates, args.draws, index,
-                        )
-                    )
-                    health = soh(state.aging, rates)
-                    low, high = (life.interval_days or (None, None))
-                    # `state.aging` is only the warm-up state after `repeats`
-                    # trips -- a few days old, not a life. The TERMINAL ageing
-                    # state (what the acceptance criterion actually asks for)
-                    # is where the point-estimate projection landed, at end
-                    # of life or the horizon: the last sample of its own
-                    # state_curve, which cell.life.project() populates for
-                    # exactly this reason.
-                    _, _, terminal_crystal, terminal_corrosion_h, terminal_shedding, _ = (
-                        life.state_curve[-1]
-                    )
-                    life_rows.append({
-                        "scenario": name, "ambient_c": ambient_c,
-                        "trip_minutes": trip_minutes, "layup_days": layup_days,
-                        "parasitic_a": parasitic_a,
-                        "trips_per_day": SCHEDULE_TRIPS_PER_DAY,
-                        "soak_h": SCHEDULE_SOAK_H,
-                        "corrosion_equivalent_h_per_day": per_day.corrosion_equivalent_h,
-                        "ah_throughput_per_day": per_day.ah_throughput,
-                        "low_soc_hours_per_day": per_day.low_soc_hours,
-                        "full_charge_hours_per_day": per_day.full_charge_hours,
-                        "vibration_dose_per_day": per_day.vibration_dose,
-                        "soc_after_repeats": state.soc,
-                        "soh_after_repeats": health,
-                        "corrosion_hours": terminal_corrosion_h,
-                        "crystal": terminal_crystal,
-                        "shedding": terminal_shedding,
-                        "eol_days": "" if life.eol_days is None else life.eol_days,
-                        "eol_years": (
-                            "" if life.eol_days is None
-                            else round(life.eol_days / 365.0, 3)
-                        ),
-                        "interval_low_days": "" if low is None else low,
-                        "interval_high_days": "" if high is None else high,
-                        "scale_unfitted": int(life.scale_unfitted),
-                    })
+                row.update({
+                    "i_bat_a": step.i_bat_a, "v_bat_v": step.v_bat_v,
+                    "t_bat_c": step.t_bat_c, "soc": step.soc,
+                    "r_int_ohm": step.r_int_ohm,
+                })
+                within_rows.append(noise.apply(row))
 
-                    for day, soc, crystal, corrosion_hours, shedding, soh_val in (
-                        life.state_curve
-                    ):
-                        aging_rows.append({
-                            "scenario": name, "day": day, "soc": soc,
-                            "crystal": crystal, "corrosion_hours": corrosion_hours,
-                            "shedding": shedding, "soh": soh_val,
-                        })
+        for _ in range(SCENARIOS_PER_AMBIENT):
+            trip_minutes = sampling_rng.uniform(*TRIP_MINUTES_RANGE)
+            layup_days = sampling_rng.uniform(*LAYUP_DAYS_RANGE)
+            layup_gap_days = sampling_rng.uniform(*LAYUP_GAP_DAYS_RANGE)
+            parasitic_a = sampling_rng.uniform(*PARASITIC_A_RANGE)
 
-                    # The 1 Hz rows depend only on ambient and trip length --
-                    # layup and parasitic draw affect only the soak, which
-                    # never appears in a "trip" row -- so emit them once per
-                    # (ambient, trip_minutes) pair rather than once per
-                    # scenario.
-                    key = (ambient_c, trip_minutes)
-                    if key not in seen_within:
-                        seen_within.add(key)
-                        wname = f"amb{ambient_c:g}_trip{trip_minutes:g}m"
-                        for trip_index, result in enumerate(trips):
-                            for sample, step in zip(trip_samples, result.steps):
-                                row = {
-                                    "scenario": wname, "ambient_c": ambient_c,
-                                    "trip_minutes": trip_minutes,
-                                    "trip": trip_index, "t_s": step.t_s,
-                                }
-                                for column in FEATURES:
-                                    row[column] = (
-                                        step.t_bay_c if column == "t_bay_c"
-                                        else float(sample[column])
-                                    )
-                                row.update({
-                                    "i_bat_a": step.i_bat_a, "v_bat_v": step.v_bat_v,
-                                    "t_bat_c": step.t_bat_c, "soc": step.soc,
-                                    "r_int_ohm": step.r_int_ohm,
-                                })
-                                within_rows.append(noise.apply(row))
-                    index += 1
-                    print(f"  [{index:3d}/{total_scenarios}] {name:38s} "
-                          f"eol={life.eol_days} days low_soc_h/d="
-                          f"{per_day.low_soc_hours:.3f} terminal_crystal="
-                          f"{terminal_crystal:.5f}",
-                          flush=True)
+            name = f"amb{ambient_c:g}_scenario{index:04d}"
+            scenario, schedule, trips, life, per_day, state, trip_samples = (
+                run_scenario(
+                    driving, ambient_c, SCHEDULE_TRIPS_PER_DAY, SCHEDULE_SOAK_H,
+                    trip_minutes, layup_days, layup_gap_days, parasitic_a,
+                    args.repeats, rates, args.draws, index,
+                )
+            )
+            health = soh(state.aging, rates)
+            low, high = (life.interval_days or (None, None))
+            # `state.aging` is only the warm-up state after `repeats` trips --
+            # a few days old, not a life. The TERMINAL ageing state is where
+            # the point-estimate projection landed, at end of life or the
+            # horizon: the last sample of its own state_curve.
+            _, _, terminal_crystal, terminal_corrosion_h, terminal_shedding, _ = (
+                life.state_curve[-1]
+            )
+            life_rows.append({
+                "scenario": name, "ambient_c": ambient_c,
+                "trip_minutes": trip_minutes, "layup_days": layup_days,
+                "layup_gap_days": layup_gap_days, "parasitic_a": parasitic_a,
+                "trips_per_day": SCHEDULE_TRIPS_PER_DAY,
+                "soak_h": SCHEDULE_SOAK_H,
+                "corrosion_equivalent_h_per_day": per_day.corrosion_equivalent_h,
+                "ah_throughput_per_day": per_day.ah_throughput,
+                "low_soc_hours_per_day": per_day.low_soc_hours,
+                "full_charge_hours_per_day": per_day.full_charge_hours,
+                "vibration_dose_per_day": per_day.vibration_dose,
+                "soc_after_repeats": state.soc,
+                "soh_after_repeats": health,
+                "corrosion_hours": terminal_corrosion_h,
+                "crystal": terminal_crystal,
+                "shedding": terminal_shedding,
+                "eol_days": "" if life.eol_days is None else life.eol_days,
+                "eol_years": (
+                    "" if life.eol_days is None
+                    else round(life.eol_days / 365.0, 3)
+                ),
+                "interval_low_days": "" if low is None else low,
+                "interval_high_days": "" if high is None else high,
+                "scale_unfitted": int(life.scale_unfitted),
+            })
+
+            for day, soc, crystal, corrosion_hours, shedding, soh_val in (
+                life.state_curve
+            ):
+                aging_rows.append({
+                    "scenario": name, "day": day, "soc": soc,
+                    "crystal": crystal, "corrosion_hours": corrosion_hours,
+                    "shedding": shedding, "soh": soh_val,
+                })
+
+            index += 1
+            print(f"  [{index:3d}/{total_scenarios}] {name:24s} "
+                  f"amb={ambient_c:g} trip={trip_minutes:.2f}m "
+                  f"layup={layup_days:.2f}d/{layup_gap_days:.1f}d "
+                  f"par={parasitic_a:.3f}A eol={life.eol_days} days "
+                  f"low_soc_h/d={per_day.low_soc_hours:.3f} "
+                  f"terminal_crystal={terminal_crystal:.5f}",
+                  flush=True)
 
     for path, columns, rows in (
         (out / "within_trip.csv", WITHIN_COLUMNS, within_rows),
@@ -428,6 +481,17 @@ def main(argv=None) -> int:
     reached = [r for r in life_rows if r["eol_days"] != ""]
     low_soc_scenarios = [r for r in life_rows if r["low_soc_hours_per_day"] > 0.0]
     crystals = [r["crystal"] for r in life_rows]
+
+    # A 10-bin histogram of terminal crystal, for the continuum-vs-binary
+    # question this revision exists to answer.
+    crystal_bins = [0] * 10
+    for c in crystals:
+        bin_index = min(9, int(c * 10))
+        crystal_bins[bin_index] += 1
+    crystal_histogram = {
+        f"[{i/10:.1f},{(i+1)/10:.1f})": crystal_bins[i] for i in range(10)
+    }
+
     sidecar = {
         "git_commit": _git_commit(),
         "trajectory": str(args.trajectory),
@@ -441,13 +505,15 @@ def main(argv=None) -> int:
         ],
         "axes": {
             "ambient_c": list(AMBIENTS_C),
-            "trip_minutes": list(TRIP_MINUTES),
-            "layup_days": list(LAYUP_DAYS),
-            "parasitic_a": list(PARASITIC_A),
+            "scenarios_per_ambient": SCENARIOS_PER_AMBIENT,
+            "scenario_sampling_seed": SCENARIO_SAMPLING_SEED,
+            "trip_minutes_range": list(TRIP_MINUTES_RANGE),
+            "layup_days_range": list(LAYUP_DAYS_RANGE),
+            "layup_gap_days_range": list(LAYUP_GAP_DAYS_RANGE),
+            "parasitic_a_range": list(PARASITIC_A_RANGE),
             "fixed_schedule_trips_per_day_soak_h": [
                 SCHEDULE_TRIPS_PER_DAY, SCHEDULE_SOAK_H
             ],
-            "layup_period_days": LAYUP_PERIOD_DAYS,
         },
         "features": list(FEATURES),
         "targets": list(TARGETS),
@@ -464,6 +530,7 @@ def main(argv=None) -> int:
             "terminal_crystal_range": (
                 [min(crystals), max(crystals)] if crystals else None
             ),
+            "terminal_crystal_histogram_10_bins": crystal_histogram,
         },
         "life_spread": (
             {"min_days": min(r["eol_days"] for r in reached),
@@ -471,6 +538,9 @@ def main(argv=None) -> int:
              "ratio": round(max(r["eol_days"] for r in reached)
                             / min(r["eol_days"] for r in reached), 3)}
             if reached else None
+        ),
+        "eol_reached_fraction": (
+            round(len(reached) / len(life_rows), 3) if life_rows else None
         ),
         "ageing_rates": {
             "corrosion_eol_h": rates.corrosion_eol_h,
@@ -497,35 +567,50 @@ def main(argv=None) -> int:
             "t_bat_c tracks t_bay_c with no other forcing of consequence; "
             "predicting one from the other is close to trivial and the "
             "exact-match leakage detector will not flag it.",
-            "Within an (ambient, trip_minutes) pair the driving channels are "
-            "IDENTICAL across scenarios -- one recording, truncated the same "
-            "way, replayed under different layup and parasitic conditions. "
-            "This is an ambient/trip-length/layup/parasitic sweep, not a "
-            "driving-style sweep.",
-            "ACCESSORIES (hvac/lights) was DROPPED as a swept axis. In the "
-            "prior 40-scenario sweep it moved life by about two days out of a "
-            "thousand -- noise, not signal -- and every scenario spent on it "
-            "was a scenario not spent on an axis that moves sulfation. It is "
-            "held fixed off (hvac=0, lights=False) in every scenario here.",
-            "SCHEDULES (trip frequency x soak length) was likewise fixed to a "
-            "single representative pattern (2 trips/day, 8 h soak) rather than "
-            "swept. Neither axis of the original 4-point sweep ever moved "
-            "low_soc_hours off zero; TRIP_MINUTES is the lever that actually "
-            "controls whether a trip recovers its own crank, so the scenario "
-            "budget went there instead of a fourth cross-product dimension.",
-            f"LAYUP_DAYS is folded into day_damage as a PERIOD AVERAGE, not a "
-            f"literal calendar simulation: a {LAYUP_PERIOD_DAYS:g}-day period "
-            f"of ordinary driving days plus one continuous layup_days-long park "
-            f"is integrated once, and the total damage is divided by the "
-            f"period length before being handed to cell.life.project(), which "
-            f"has no notion of 'this specific day is the layup day'. The "
-            f"hidden crystal state still accumulates and saturates day by day "
-            f"inside project()'s own loop -- only the INPUT rate is smoothed, "
-            f"not the state evolution. A true day-by-day calendar simulation "
-            f"of the periodic pattern would show sharper, spikier low_soc_hours "
-            f"concentrated in the actual layup days rather than a smooth "
-            f"average; this sweep's low_soc_hours_per_day should be read as "
-            f"the long-run average rate, not a literal single day's value.",
+            "within_trip.csv holds ONE full-length reference replay per "
+            "ambient, not one per scenario: trip length is now a "
+            "continuously-sampled per-scenario value, so no two scenarios "
+            "share an exact truncation to de-duplicate on, and a private "
+            "driving-channel copy per scenario would multiply row count for "
+            "no benefit -- the recording does not change, only its "
+            "truncation does, which a consumer can slice from the reference "
+            "trace using each scenario's own trip_minutes in "
+            "scenario_life.csv. within_trip.csv is illustrative of the "
+            "driving channels, not a per-scenario table any more.",
+            "ACCESSORIES (hvac/lights) was DROPPED as a swept axis. In an "
+            "earlier revision it moved life by about two days out of a "
+            "thousand -- noise, not signal. Held fixed off (hvac=0, "
+            "lights=False) in every scenario here.",
+            "SCHEDULES (trip frequency x soak length) is likewise fixed to a "
+            "single representative pattern (2 trips/day, 8 h soak) rather "
+            "than swept. Neither axis ever moved low_soc_hours off zero.",
+            "TRIP_MINUTES, LAYUP_DAYS, LAYUP_GAP_DAYS and PARASITIC_A are "
+            "sampled CONTINUOUSLY per scenario (see axes.*_range and "
+            "scenario_sampling_seed above), not gridded. An earlier gridded "
+            "revision produced a near-binary terminal crystal distribution "
+            "(27/96 at exactly 0, 65/96 above 0.9, 4/96 in between), driven "
+            "almost entirely by whether layup_days was nonzero at all -- "
+            "unusable for a counterfactual-abduction experiment, which needs "
+            "a genuine continuum to infer, not a coin flip. See "
+            "sulfation.terminal_crystal_histogram_10_bins above for how this "
+            "revision's distribution compares.",
+            "day_damage is folded as a PERIOD AVERAGE, not a literal calendar "
+            "simulation: layup_gap_days ordinary driving days plus one "
+            "continuous layup_days-long park are integrated once each, and "
+            "the total damage is divided by the layup_gap_days + layup_days "
+            "cycle length before being handed to cell.life.project(), which "
+            "has no notion of 'this specific day is the layup day'. The "
+            "hidden crystal state still accumulates and saturates day by day "
+            "inside project()'s own loop -- only the INPUT rate is smoothed, "
+            "not the state evolution. A true day-by-day calendar simulation "
+            "of the periodic pattern would show sharper, spikier "
+            "low_soc_hours concentrated in the actual layup days rather than "
+            "a smooth average; this sweep's low_soc_hours_per_day should be "
+            "read as the long-run average rate, not a literal single day's "
+            "value. layup_days == 0 is not a special case: the formula "
+            "reduces to the ordinary-day rate exactly (see day_damage's own "
+            "docstring), so the layup pressure degrades smoothly to none "
+            "rather than switching off at a boundary.",
             "Every *_per_day column in scenario_life.csv is life.avg_damage_"
             "per_day: what cell.life.project() actually integrated into the "
             "ageing state, averaged over every calendar day of the projection "
@@ -556,11 +641,16 @@ def main(argv=None) -> int:
         print(f"life spread across scenarios: {sidecar['life_spread']['ratio']}x "
               f"({sidecar['life_spread']['min_days']:.0f} to "
               f"{sidecar['life_spread']['max_days']:.0f} days)")
+    print(f"eol reached: {len(reached)}/{len(life_rows)} "
+          f"({sidecar['eol_reached_fraction']})")
     print(f"scenarios with non-zero low_soc_hours_per_day: "
           f"{len(low_soc_scenarios)}/{len(life_rows)} "
           f"({sidecar['sulfation']['fraction_with_nonzero_low_soc_hours_per_day']})")
     if crystals:
         print(f"terminal crystal range: {min(crystals):.5f} to {max(crystals):.5f}")
+        print("terminal crystal histogram (10 bins):")
+        for label, count in crystal_histogram.items():
+            print(f"  {label}: {count}")
     print(f"elapsed {time.time() - started:.0f} s")
     return 0
 
