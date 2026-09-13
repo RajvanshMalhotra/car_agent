@@ -11,6 +11,16 @@ it draws and the heat it makes, which changes the damage. Recomputing once per
 drift threshold costs a few hundred evaluations over a full life instead of
 10^8.
 
+**State of charge is carried too, but not extrapolated like damage is.**
+`day_damage` reports the state of charge one day's driving-and-soak pattern
+ends at, alongside the damage, and each subsequent probe starts from that
+value rather than a fixed initial one -- see `project`'s docstring for why the
+value is held rather than compounded as a per-day rate between resims. Without
+carrying it forward at all, a probe rebuilt from a fixed starting SoC every
+call cannot drift over a multi-year projection, and the sulfation pathway --
+`low_soc_hours`, gated on SoC actually falling below `LOW_SOC` -- is
+structurally unreachable no matter how long the horizon runs.
+
 **The scale gate.** Physics gives the fade curve its shape; the rate constant
 that turns shape into days has to come from cells that actually reached end of
 life, and there are none. `headline_days` therefore raises unless the rates are
@@ -35,7 +45,23 @@ from cell.aging import EOL_SOH, AgingRates, AgingState, Damage, accumulate, soh
 #: How often a point is recorded on the health curve.
 CURVE_INTERVAL_DAYS = 30
 
-DayDamage = Callable[[float], Damage]
+
+def _clamp01(value: float) -> float:
+    return max(0.0, min(1.0, value))
+
+
+@dataclass(frozen=True)
+class DayStart:
+    """What a `day_damage` probe needs before it can run one day's pattern."""
+
+    health: float
+    soc: float
+
+
+#: `day_damage` takes the state a day starts from and returns that day's
+#: damage plus the state of charge it ended at -- not a delta, an absolute
+#: value, so the caller need not know how the probe got there.
+DayDamage = Callable[[DayStart], tuple[Damage, float]]
 
 
 class UnfittedScale(RuntimeError):
@@ -96,11 +122,36 @@ def project(
     rates: AgingRates,
     schedule: TripSchedule,
     resim_threshold: float = 0.01,
+    soc0: float = 1.0,
 ) -> LifeEstimate:
-    """Advance health day by day until end of life or the horizon."""
+    """Advance health, and state of charge, day by day to end of life or the horizon.
+
+    State of charge is resimulated on the same schedule as damage -- at the
+    start and whenever health has drifted past `resim_threshold` -- rather
+    than every day, for the same reason: `day_damage` runs a full trip+soak
+    integration and calling it 10^8 times is not on the table.
+
+    Between resim points, SoC is held at what the last probe reported, NOT
+    re-derived daily from a held per-day delta the way `damage` is. `damage`
+    is a rate -- roughly the same amount accrues each day, so repeating it is
+    a fair approximation. A day's net SoC change is not a rate: charge
+    acceptance grows as the battery empties (`load/electrical.py`'s `(1 -
+    SoC)` taper), so the true day-over-day map is strongly self-correcting.
+    Treating one probed day's delta as if it applied every day until the next
+    resim compounds a nonlinear step into a linear one and was verified to
+    oscillate the projected SoC between 0 and 1 every resim interval, rather
+    than settle near the equilibrium a repeated day actually reaches. Holding
+    the last reported value instead still carries SoC forward -- consecutive
+    probes see whatever the last one actually returned, never a value reset
+    to the start -- so a genuinely charge-negative `day_damage` still drifts
+    it down over the projection; it just does not extrapolate a single day's
+    map across days it was never evaluated for.
+    """
     state = AgingState()
     health = soh(state, rates)
-    damage = day_damage(health)
+    soc = _clamp01(soc0)
+    damage, soc = day_damage(DayStart(health=health, soc=soc))
+    soc = _clamp01(soc)
     curve: list[tuple[float, float]] = [(0.0, health)]
     eol_days: float | None = None
 
@@ -117,7 +168,8 @@ def project(
             break
         if health - current >= resim_threshold:
             health = current
-            damage = day_damage(health)
+            damage, soc = day_damage(DayStart(health=health, soc=soc))
+            soc = _clamp01(soc)
 
     return LifeEstimate(
         eol_days=eol_days,
@@ -133,6 +185,7 @@ def ensemble(
     draws: int = 32,
     seed: int = 0,
     spread: float = 0.35,
+    soc0: float = 1.0,
 ) -> LifeEstimate:
     """Vary the unfitted constant over a plausible range and report quantiles.
 
@@ -142,14 +195,14 @@ def ensemble(
     """
     rng = random.Random(seed)
     lives: list[float] = []
-    point = project(day_damage, rates, schedule)
+    point = project(day_damage, rates, schedule, soc0=soc0)
 
     for _ in range(draws):
         factor = 1.0 + rng.uniform(-spread, spread)
         drawn = dataclasses.replace(
             rates, corrosion_eol_h=rates.corrosion_eol_h * factor
         )
-        result = project(day_damage, drawn, schedule)
+        result = project(day_damage, drawn, schedule, soc0=soc0)
         if result.eol_days is not None:
             lives.append(result.eol_days)
 

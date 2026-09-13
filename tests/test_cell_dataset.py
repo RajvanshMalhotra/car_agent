@@ -33,8 +33,11 @@ def _fixture(tmp_path):
         result = run_trip(iter(samples), SCENARIO, state, RATES, cranked=index > 0)
         trips.append((samples, result))
     life = project(
-        lambda health: dataclasses.replace(
-            Damage.zero(), duration_s=86400.0, corrosion_equivalent_h=78.7
+        lambda day_start: (
+            dataclasses.replace(
+                Damage.zero(), duration_s=86400.0, corrosion_equivalent_h=78.7
+            ),
+            day_start.soc,
         ),
         RATES, TripSchedule(),
     )

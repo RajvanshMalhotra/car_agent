@@ -2,23 +2,24 @@ import dataclasses
 
 import pytest
 
-from cell.aging import AgingRates, Damage
-from cell.life import TripSchedule, UnfittedScale, ensemble, project
+from cell.aging import LOW_SOC, AgingRates, Damage
+from cell.life import DayStart, TripSchedule, UnfittedScale, ensemble, project
 
 RATES = AgingRates()
 SCHEDULE = TripSchedule()
 
 
 def _daily(corrosion_h, low_soc_h=0.0):
-    """A day's damage that does not depend on health."""
-    def day_damage(health):
-        return dataclasses.replace(
+    """A day's damage that does not depend on health, and leaves SoC alone."""
+    def day_damage(day_start):
+        damage = dataclasses.replace(
             Damage.zero(),
             duration_s=86400.0,
             corrosion_equivalent_h=corrosion_h,
             low_soc_hours=low_soc_h,
             full_charge_hours=max(0.0, 20.0 - low_soc_h),
         )
+        return damage, day_start.soc
     return day_damage
 
 
@@ -105,14 +106,64 @@ def test_the_ensemble_is_reproducible_from_its_seed():
 def test_damage_is_recomputed_when_health_has_drifted():
     calls = []
 
-    def day_damage(health):
-        calls.append(health)
-        return dataclasses.replace(
+    def day_damage(day_start):
+        calls.append(day_start.health)
+        damage = dataclasses.replace(
             Damage.zero(), duration_s=86400.0, corrosion_equivalent_h=78.7
         )
+        return damage, day_start.soc
 
     project(day_damage, RATES, SCHEDULE, resim_threshold=0.02)
     # Resistance rises as health falls, which changes current and temperature,
     # so the per-trip damage cannot be computed once and reused forever.
     assert len(calls) > 1
     assert calls == sorted(calls, reverse=True)
+
+
+def test_state_of_charge_drifts_down_when_a_day_nets_charge_negative():
+    # The mechanism this change exists to enable: a day_damage that reports a
+    # slightly lower state of charge each time it is probed must produce a
+    # projection where SoC genuinely declines over the life, rather than
+    # staying pinned at whatever the first probe saw.
+    def day_damage(day_start):
+        damage = dataclasses.replace(
+            Damage.zero(), duration_s=86400.0,
+            corrosion_equivalent_h=ORDINARY_DAY_H,
+        )
+        soc_end = max(0.0, day_start.soc - 0.002)
+        return damage, soc_end
+
+    # A small resim_threshold forces frequent resimulation, so the SoC drift
+    # is actually tracked rather than smoothed over a long stretch of days.
+    estimate = project(day_damage, RATES, SCHEDULE, resim_threshold=0.0005)
+    assert estimate.eol_days is not None
+
+
+def test_low_soc_hours_engage_once_state_of_charge_actually_falls():
+    # Structural proof that the sulfation pathway is reachable through
+    # project() itself, not just through a hand-called probe: start state of
+    # charge just above LOW_SOC, have day_damage report low_soc_hours only
+    # when the SoC it is handed has actually dropped below LOW_SOC, and drift
+    # SoC down a little every probe. Once project() carries that drift
+    # forward, a later probe must see low_soc_hours flip from 0 to non-zero.
+    reported_low_soc_h = []
+
+    def day_damage(day_start):
+        low_soc_h = 20.0 if day_start.soc < LOW_SOC else 0.0
+        reported_low_soc_h.append(low_soc_h)
+        damage = dataclasses.replace(
+            Damage.zero(), duration_s=86400.0,
+            corrosion_equivalent_h=ORDINARY_DAY_H, low_soc_hours=low_soc_h,
+        )
+        soc_end = max(0.0, day_start.soc - 0.002)
+        return damage, soc_end
+
+    project(
+        day_damage, RATES, SCHEDULE, resim_threshold=0.0005,
+        soc0=LOW_SOC + 0.01,
+    )
+    assert reported_low_soc_h[0] == 0.0  # starts above LOW_SOC
+    assert any(h > 0.0 for h in reported_low_soc_h), (
+        "low_soc_hours never engaged -- state of charge never carried "
+        "forward below LOW_SOC across the projection"
+    )

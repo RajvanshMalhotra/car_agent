@@ -29,7 +29,7 @@ from pathlib import Path
 from cell.aging import AgingRates, Damage
 from cell.dataset import write_dataset
 from cell.integrate import CellState, run_soak, run_trip
-from cell.life import TripSchedule, ensemble
+from cell.life import DayStart, TripSchedule, ensemble
 from load.legacy import LEGACY_PROVENANCE, read_legacy
 from load.spec import BatteryScenario
 from load.trips import segment
@@ -72,24 +72,35 @@ def build(
                 initial_coolant_c=float(driving[-1]["coolant_c"]),
             )
 
-    # A day's damage at a given health: the trip damage scaled by trips per
-    # day, plus the soaks between them. Recomputed as resistance rises.
-    def day_damage(health: float) -> Damage:
+    # A day's damage at a given health and starting state of charge: the trip
+    # damage scaled by trips per day, plus the soaks between them, and the
+    # state of charge that one trip+soak cycle nets, also scaled up to a full
+    # day's worth of cycles. Recomputed as resistance rises.
+    def day_damage(day_start: DayStart) -> tuple[Damage, float]:
         probe = CellState(
-            soc=state.soc, temp_c=scenario.ambient_c, aging=state.aging.copy()
+            soc=day_start.soc, temp_c=scenario.ambient_c, aging=state.aging.copy()
         )
         trip = run_trip(
-            iter(driving), scenario, probe, rates, cranked=True, health=health,
+            iter(driving), scenario, probe, rates, cranked=True,
+            health=day_start.health,
         ).damage
         soak = run_soak(
             schedule.soak_s, scenario, probe, rates,
-            initial_coolant_c=float(driving[-1]["coolant_c"]), health=health,
+            initial_coolant_c=float(driving[-1]["coolant_c"]),
+            health=day_start.health,
         ).damage
-        return trip.scaled(schedule.trips_per_day) + soak.scaled(
+        damage = trip.scaled(schedule.trips_per_day) + soak.scaled(
             schedule.trips_per_day
         )
+        cycle_delta = probe.soc - day_start.soc
+        soc_end = max(0.0, min(
+            1.0, day_start.soc + cycle_delta * schedule.trips_per_day
+        ))
+        return damage, soc_end
 
-    life = ensemble(day_damage, rates, schedule, draws=16, seed=scenario.seed)
+    life = ensemble(
+        day_damage, rates, schedule, draws=16, seed=scenario.seed, soc0=state.soc,
+    )
 
     return write_dataset(
         out_dir=out_dir, scenario=scenario, trips=trips, life=life,

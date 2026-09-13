@@ -33,7 +33,7 @@ from pathlib import Path
 from cell.aging import AgingRates, AgingState, soh
 from cell.dataset import FEATURES, TARGETS
 from cell.integrate import CellState, run_soak, run_trip
-from cell.life import TripSchedule, ensemble
+from cell.life import DayStart, TripSchedule, ensemble
 from load.legacy import LEGACY_PROVENANCE, read_legacy
 from load.spec import BatteryScenario
 from load.trips import segment
@@ -100,16 +100,23 @@ def run_scenario(driving, ambient_c, hvac, lights, trips_per_day, soak_h,
             run_soak(schedule.soak_s, scenario, state, rates,
                      initial_coolant_c=last_coolant)
 
-    def day_damage(health):
-        probe = CellState(soc=state.soc, temp_c=ambient_c, aging=state.aging.copy())
+    def day_damage(day_start):
+        probe = CellState(
+            soc=day_start.soc, temp_c=ambient_c, aging=state.aging.copy()
+        )
         trip = run_trip(iter(driving), scenario, probe, rates, cranked=True,
-                        health=health).damage
+                        health=day_start.health).damage
         soak = run_soak(schedule.soak_s, scenario, probe, rates,
-                        initial_coolant_c=last_coolant, health=health).damage
-        return trip.scaled(trips_per_day) + soak.scaled(trips_per_day)
+                        initial_coolant_c=last_coolant,
+                        health=day_start.health).damage
+        damage = trip.scaled(trips_per_day) + soak.scaled(trips_per_day)
+        cycle_delta = probe.soc - day_start.soc
+        soc_end = max(0.0, min(1.0, day_start.soc + cycle_delta * trips_per_day))
+        return damage, soc_end
 
-    life = ensemble(day_damage, rates, schedule, draws=draws, seed=seed)
-    per_day = day_damage(soh(state.aging, rates))
+    life = ensemble(day_damage, rates, schedule, draws=draws, seed=seed,
+                    soc0=state.soc)
+    per_day, _ = day_damage(DayStart(health=soh(state.aging, rates), soc=state.soc))
     return scenario, schedule, trips, life, per_day, state
 
 
