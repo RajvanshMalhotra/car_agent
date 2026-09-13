@@ -19,27 +19,24 @@ from __future__ import annotations
 
 from load.electrical import REGULATED_VOLTAGE_V
 
-#: Resting voltage, fitted by ordinary least squares against 955 at-rest
-#: (|I| < 0.5 A) measurements from a 1200 Ah OPzS cell -- Rocha-Henriquez et
-#: al., Zenodo record 17252822, CC BY 4.0 -- binned by state of charge and
-#: converted from per-cell to 12 V terms (6 cells in series):
+#: Resting voltage spans 11.9 V empty to 12.7 V full, roughly linear over the
+#: usable range for a flooded 12 V battery. This is still an assumed textbook
+#: relationship, not a fitted one.
 #:
-#:     SoC 20-30% -> 2.0193 V/cell   SoC 50-60% -> 2.1056 V/cell
-#:     SoC 30-40% -> 2.0511 V/cell   SoC 60-70% -> 2.1263 V/cell
-#:     SoC 40-50% -> 2.0599 V/cell
-#:
-#: OLS through the five bin midpoints (0.25, 0.35, 0.45, 0.55, 0.65) gives a
-#: per-cell line of 1.9516 + 0.2685*soc; multiplying both terms by 6 gives the
-#: constants below. The fit tracks all five measured points to within 0.08 V
-#: at 12 V scale.
-#:
-#: Caveat: the source cell is OPzS tubular stationary, not SLI. The transfer
-#: assumption is that OCV-vs-SoC is governed by acid concentration and is
-#: broadly chemistry-generic across flooded lead-acid; plate construction
-#: (tubular vs SLI flat-pasted) differs and mainly affects resistance and
-#: cycling behaviour, not resting terminal voltage.
-OCV_EMPTY_V = 11.709689999999998
-OCV_SPAN_V = 1.611000000000002
+#: A fit was attempted against 955 at-rest (|I| < 0.5 A) measurements from a
+#: 1200 Ah OPzS cell (Rocha-Henriquez et al., Zenodo record 17252822, CC BY
+#: 4.0) and rejected: that dataset's own `%SOC` column never exceeds 67%
+#: across any of its Cell 1 files, and its OCV at ">60% SoC" (2.1263 V/cell)
+#: already equals the textbook value for a FULLY charged flooded lead-acid
+#: cell (2.12 V/cell). Their 65% reads as 100% on the textbook scale, so their
+#: `%SOC` is evidently normalised to something else -- most likely Ah drawn
+#: within a specific test, or a C20 reference -- not the absolute state of
+#: charge this function takes. Fitting a line over their 25-65% and applying
+#: it across our 0-100% extrapolates beyond the data at both ends and was
+#: producing a curve 0.3-0.6 V too high. Validating this curve needs a dataset
+#: whose state of charge is on the same absolute basis as ours.
+OCV_EMPTY_V = 11.9
+OCV_SPAN_V = 0.8
 
 #: Resistance multiplier at end of life. A worn battery is a high-resistance
 #: battery; this is what makes the crank sag diagnostic.
