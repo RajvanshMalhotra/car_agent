@@ -20,14 +20,18 @@ def test_corrosion_hours_reduce_health():
     assert soh(state, RATES) < 1.0
 
 
-def test_corrosion_damage_is_sublinear_in_time():
-    # Schiffer: the corrosion layer grows as roughly t^0.6, so doubling the
-    # exposure does less than double the damage.
+def test_corrosion_loss_is_superlinear_in_time_not_sublinear():
+    # Schiffer's corrosion LAYER grows as roughly t^0.6 (sublinear) but this
+    # model maps layer thickness to capacity LOSS through
+    # CORROSION_LOSS_EXPONENT (3.0), giving an effective time exponent of
+    # 0.6 * 3.0 = 1.8. That is superlinear: doubling the exposure MORE than
+    # doubles the damage, which is what makes the fade curve convex
+    # (accelerating) rather than front-loaded.
     once = accumulate(AgingState(), _damage(corrosion_equivalent_h=10000.0), RATES)
     twice = accumulate(AgingState(), _damage(corrosion_equivalent_h=20000.0), RATES)
     loss_once = 1.0 - soh(once, RATES)
     loss_twice = 1.0 - soh(twice, RATES)
-    assert loss_twice < 2.0 * loss_once
+    assert loss_twice > 2.0 * loss_once
     assert loss_twice > loss_once
 
 
@@ -114,3 +118,26 @@ def test_a_hot_climate_is_markedly_worse():
 def test_a_gently_used_garaged_car_is_not_claimed_to_last_forever():
     # The other end of the sanity band. Nothing here may predict 12 years.
     assert _years_to_eol(28.1) < 12.0
+
+
+def test_corrosion_fraction_is_exactly_one_at_the_defined_end_of_life():
+    # However the layer-fraction is reshaped into a loss-fraction, end of
+    # life must still land exactly where corrosion_eol_h says it does.
+    state = AgingState(corrosion_hours=RATES.corrosion_eol_h)
+    assert soh(state, RATES) == pytest.approx(EOL_SOH)
+
+
+def test_the_corrosion_fade_curve_is_convex_not_front_loaded():
+    # The property this change exists to create: real batteries fade slowly
+    # at first and then fall off a knee near end of life, the opposite of the
+    # old concave (exponent < 1) curve. So the capacity lost in the last 10%
+    # of corrosion life must exceed the capacity lost in the first 10%.
+    eol_h = RATES.corrosion_eol_h
+
+    def loss_at(fraction_of_eol):
+        state = AgingState(corrosion_hours=fraction_of_eol * eol_h)
+        return 1.0 - soh(state, RATES)
+
+    loss_first_10pct = loss_at(0.1) - loss_at(0.0)
+    loss_last_10pct = loss_at(1.0) - loss_at(0.9)
+    assert loss_last_10pct > loss_first_10pct

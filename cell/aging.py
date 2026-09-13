@@ -38,6 +38,18 @@ FULL_SOC = 0.98
 #: Capacity loss at end of life, i.e. 1.0 - EOL_SOH.
 EOL_LOSS = 1.0 - EOL_SOH
 
+#: Maps corrosion LAYER fraction to capacity-LOSS fraction. Schiffer's t^0.6
+#: layer growth (`AgingRates.corrosion_exponent`) is well-grounded and kept as
+#: is; the error this project made was treating layer thickness as if it were
+#: capacity loss directly. Grid conductivity does not fall linearly as the
+#: layer thickens -- it collapses, because the remaining conductive cross-
+#: section shrinks and contact resistance at the grid/active-material
+#: interface rises faster than the layer itself grows. So capacity loss goes
+#: as layer_fraction ** CORROSION_LOSS_EXPONENT, on top of the t^0.6 that
+#: produced the layer fraction, giving an effective time exponent of
+#: 0.6 * 3.0 = 1.8: slow at first, a knee, then fast -- convex, not concave.
+CORROSION_LOSS_EXPONENT = 3.0
+
 
 @dataclass(frozen=True)
 class Damage:
@@ -120,7 +132,7 @@ class AgingRates:
     """
 
     corrosion_eol_h: float = 115000.0
-    corrosion_exponent: float = 0.6  # Schiffer's sublinear layer growth
+    corrosion_exponent: float = 0.6  # Schiffer's sublinear LAYER growth
     sulfation_weight: float = 0.30  # relative to a full corrosion life
     shedding_weight: float = 0.15
     sulfation_per_low_soc_h: float = 2.0e-4
@@ -167,7 +179,8 @@ def soh(state: AgingState, rates: AgingRates) -> float:
     """State of health: 1.0 new, `EOL_SOH` at end of life."""
     if state.corrosion_hours > 0.0:
         exposure = state.corrosion_hours / rates.corrosion_eol_h
-        corrosion_fraction = exposure ** rates.corrosion_exponent
+        layer_fraction = exposure ** rates.corrosion_exponent  # t^0.6 growth
+        corrosion_fraction = layer_fraction ** CORROSION_LOSS_EXPONENT  # convex loss
     else:
         corrosion_fraction = 0.0
     loss = EOL_LOSS * (
