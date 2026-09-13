@@ -19,10 +19,27 @@ from __future__ import annotations
 
 from load.electrical import REGULATED_VOLTAGE_V
 
-#: Resting voltage spans 11.9 V empty to 12.7 V full, roughly linear over the
-#: usable range for a flooded 12 V battery.
-OCV_EMPTY_V = 11.9
-OCV_SPAN_V = 0.8
+#: Resting voltage, fitted by ordinary least squares against 955 at-rest
+#: (|I| < 0.5 A) measurements from a 1200 Ah OPzS cell -- Rocha-Henriquez et
+#: al., Zenodo record 17252822, CC BY 4.0 -- binned by state of charge and
+#: converted from per-cell to 12 V terms (6 cells in series):
+#:
+#:     SoC 20-30% -> 2.0193 V/cell   SoC 50-60% -> 2.1056 V/cell
+#:     SoC 30-40% -> 2.0511 V/cell   SoC 60-70% -> 2.1263 V/cell
+#:     SoC 40-50% -> 2.0599 V/cell
+#:
+#: OLS through the five bin midpoints (0.25, 0.35, 0.45, 0.55, 0.65) gives a
+#: per-cell line of 1.9516 + 0.2685*soc; multiplying both terms by 6 gives the
+#: constants below. The fit tracks all five measured points to within 0.08 V
+#: at 12 V scale.
+#:
+#: Caveat: the source cell is OPzS tubular stationary, not SLI. The transfer
+#: assumption is that OCV-vs-SoC is governed by acid concentration and is
+#: broadly chemistry-generic across flooded lead-acid; plate construction
+#: (tubular vs SLI flat-pasted) differs and mainly affects resistance and
+#: cycling behaviour, not resting terminal voltage.
+OCV_EMPTY_V = 11.709689999999998
+OCV_SPAN_V = 1.611000000000002
 
 #: Resistance multiplier at end of life. A worn battery is a high-resistance
 #: battery; this is what makes the crank sag diagnostic.
