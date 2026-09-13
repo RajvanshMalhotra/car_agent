@@ -32,6 +32,12 @@ GRAVITY_MPS2 = 9.81
 #: Coolant temperature a soak starts from when the caller does not say.
 OPERATING_TEMP_C = 90.0
 
+#: `run_soak` has no recorded oil channel to fall back on -- it synthesises
+#: coolant, so it must synthesise oil too. Assumed to track coolant with the
+#: measured engine-off gap (-1.2 C, see `load/thermal.py`) rather than at
+#: zero gap, since a soak IS the engine-off regime the gap was measured in.
+SOAK_OIL_COOLANT_GAP_C = -1.2
+
 
 @dataclass(frozen=True)
 class Step:
@@ -225,7 +231,7 @@ def run_soak(
         step_s = min(dt_s, seconds - elapsed)
         coolant += (scenario.ambient_c - coolant) * min(1.0, step_s / COOLDOWN_TAU_S)
         bay_c = bay.step(
-            {"coolant_c": coolant, "speed_mps": 0.0, "engine_load": 0.0,
+            {"coolant_c": coolant, "oil_c": coolant + SOAK_OIL_COOLANT_GAP_C,
              "engine_running": 0.0},
             step_s,
         )

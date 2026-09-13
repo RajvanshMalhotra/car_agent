@@ -128,6 +128,9 @@ def test_day_damage_style_output_varies_with_health():
     # in cell/life.py's project() fired against a fixed value forever.
     driving = [
         {"t_s": float(t), "speed_mps": 20.0, "rpm": 2500.0, "coolant_c": 90.0,
+         # +0.53 C: the measured oil-coolant gap around this speed, see
+         # load/thermal.py's docstring.
+         "oil_c": 90.53,
          "engine_load": 0.3, "engine_running": 1.0,
          "ax_mps2": 0.0, "ay_mps2": 0.0, "az_mps2": 9.81}
         for t in range(600)

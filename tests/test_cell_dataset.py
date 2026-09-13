@@ -19,6 +19,9 @@ def _drive(seconds, t0=0.0):
     for t in range(seconds):
         yield {
             "t_s": t0 + t, "speed_mps": 18.0, "rpm": 2400.0, "coolant_c": 92.0,
+            # +0.53 C: the measured oil-coolant gap around this speed, see
+            # load/thermal.py's docstring.
+            "oil_c": 92.53,
             "engine_load": 0.3, "engine_running": 1.0, "throttle": 0.3,
             "grade_rad": 0.0, "a_long_mps2": 0.0, "mass_kg": 1510.62,
             "ax_mps2": 0.1, "ay_mps2": 0.0, "az_mps2": 9.81,

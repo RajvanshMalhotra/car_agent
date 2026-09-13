@@ -10,11 +10,25 @@ CRUISE = BatteryScenario(name="cruise", ambient_c=25.0)
 IDLE_HOT = BatteryScenario(name="idle-hot", ambient_c=42.0, hvac=1.0, lights=True)
 
 
-def _drive(seconds, speed=20.0, rpm=2500.0, coolant=90.0, running=1.0):
+#: Measured oil-minus-coolant gap while stationary/crawling (see
+#: `load/thermal.py`'s docstring). `_drive(speed=0.0, ...)` is used for the
+#: idling/stop-go scenarios below, where this is the realistic gap.
+STATIONARY_GAP_C = 19.21
+
+#: Measured gap around highway speed. `_drive`'s default speed (20 m/s) sits
+#: in the 15-20 m/s bin.
+CRUISING_GAP_C = 0.53
+
+
+def _drive(seconds, speed=20.0, rpm=2500.0, coolant=90.0, running=1.0,
+           oil_gap=None):
+    gap = (STATIONARY_GAP_C if speed <= 0.0 else CRUISING_GAP_C) \
+        if oil_gap is None else oil_gap
     for t in range(seconds):
         yield {
             "t_s": float(t), "speed_mps": speed, "rpm": rpm,
-            "coolant_c": coolant, "engine_load": 0.3, "engine_running": running,
+            "coolant_c": coolant, "oil_c": coolant + gap,
+            "engine_load": 0.3, "engine_running": running,
             "ax_mps2": 0.0, "ay_mps2": 0.0, "az_mps2": 9.81,
         }
 
@@ -77,7 +91,12 @@ def test_the_battery_lags_the_bay_by_hours():
     # C_th / h is 15000 / 2 = 7500 s, so half an hour into a drive the battery
     # is still well behind the bay. This is why a short trip heats the bay
     # without much heating the battery, and why soak time matters so much.
-    result = run_trip(_drive(1800), CRUISE, CellState(temp_c=25.0), RATES)
+    # Stationary/idling (speed=0) is used so the bay is meaningfully hot -- a
+    # sustained highway gap collapses to under a degree (see
+    # `load/thermal.py`), which would leave both temperatures near ambient
+    # and the lag too small to demonstrate anything.
+    result = run_trip(_drive(1800, speed=0.0), CRUISE, CellState(temp_c=25.0),
+                      RATES)
     last = result.steps[-1]
     assert last.t_bat_c < last.t_bay_c - 5.0
 
@@ -156,8 +175,10 @@ def test_bay_temperature_carries_forward_across_the_trip_soak_boundary():
     # Seeding the next BayTemperature from the battery's own temperature
     # (which lags the bay by hours) makes the next trip start with a bay
     # spuriously close to the battery instead of where the bay actually was.
+    # Stationary/idling so the bay actually runs hot -- see the note in
+    # test_the_battery_lags_the_bay_by_hours.
     state = CellState(temp_c=30.0)
-    trip = run_trip(_drive(600, coolant=101.0), CRUISE, state, RATES)
+    trip = run_trip(_drive(600, speed=0.0, coolant=101.0), CRUISE, state, RATES)
     assert trip.state.bay_temp_c is not None
     # The bay ran hot while driving; the battery barely moved off 30 C.
     assert trip.state.bay_temp_c > trip.state.temp_c + 10.0
@@ -168,7 +189,7 @@ def test_a_soak_shows_the_heat_soak_transient():
     # BAY_TAU_S the lag clamps to alpha = 1.0 and the bay snaps straight to
     # target, so the multi-minute post-shutdown climb never shows up.
     driving_bay_c = bay_target_c(
-        coolant_c=101.0, speed_mps=20.0, engine_load=0.3,
+        coolant_c=101.0, oil_c=101.0 + CRUISING_GAP_C,
         engine_running=1.0, ambient_c=25.0,
     )
     state = CellState(temp_c=90.0, bay_temp_c=driving_bay_c)
