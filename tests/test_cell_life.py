@@ -167,3 +167,27 @@ def test_low_soc_hours_engage_once_state_of_charge_actually_falls():
         "low_soc_hours never engaged -- state of charge never carried "
         "forward below LOW_SOC across the projection"
     )
+
+
+def test_state_curve_tracks_the_hidden_ageing_state_over_time():
+    # The counterfactual experiment needs a trajectory of the hidden state,
+    # not just its terminal value -- state_curve is what carries that out of
+    # project(), alongside the scalar soh_curve it has always returned.
+    estimate = project(_daily(ORDINARY_DAY_H, low_soc_h=18.0), RATES, SCHEDULE)
+    assert estimate.state_curve[0][0] == 0.0  # starts at day 0
+    days = [point[0] for point in estimate.state_curve]
+    assert days == sorted(days)
+    # crystal (index 2) must have grown from its zero start, since low_soc_h
+    # is nonzero every day.
+    assert estimate.state_curve[0][2] == pytest.approx(0.0, abs=1e-9)
+    assert estimate.state_curve[-1][2] > 0.0
+    # The last point lines up with the same day soh_curve's last point does.
+    assert estimate.state_curve[-1][0] == estimate.soh_curve[-1][0]
+
+
+def test_the_ensemble_carries_the_point_estimates_state_curve():
+    spread = ensemble(
+        _daily(ORDINARY_DAY_H, low_soc_h=18.0), RATES, SCHEDULE, draws=4, seed=1,
+    )
+    point = project(_daily(ORDINARY_DAY_H, low_soc_h=18.0), RATES, SCHEDULE)
+    assert spread.state_curve == point.state_curve

@@ -81,6 +81,12 @@ class TripSchedule:
             raise ValueError(f"horizon_days must be positive, got {self.horizon_days}")
 
 
+#: One sampled point of `LifeEstimate.state_curve`: everything a downstream
+#: counterfactual experiment needs to know about the hidden state at a given
+#: day, not just the scalar health `soh_curve` carries.
+StatePoint = tuple[float, float, float, float, float, float]
+
+
 @dataclass(frozen=True)
 class LifeEstimate:
     eol_days: float | None
@@ -88,6 +94,22 @@ class LifeEstimate:
     scale_unfitted: bool
     interval_days: tuple[float, float] | None = None
     uncertainty_source: str = ""
+    #: (day, soc, crystal, corrosion_hours, shedding, health) at the same
+    #: cadence as `soh_curve`. `crystal` is the hidden, path-dependent state
+    #: the counterfactual-identifiability experiment turns on -- see
+    #: `cell/aging.py` -- so it is carried here rather than only at the end.
+    state_curve: tuple[StatePoint, ...] = ()
+    #: The `Damage` actually applied to `accumulate()`, averaged day-by-day
+    #: over the whole projection (to end of life, or the horizon). NOT the
+    #: single day_damage() evaluation at day 0 -- health degrades over a
+    #: multi-year projection, and `capacity_ah = capacity_ah * health` in
+    #: `cell/integrate.py` means a pathway invisible at health=1.0 (low
+    #: corrosion, say, but sulfation-triggering low_soc_hours only once the
+    #: battery has aged enough that its shrunken capacity no longer absorbs a
+    #: crank) can still show up later in the life and be entirely missed by a
+    #: day-0 snapshot. Averaging what was actually integrated reports what
+    #: really happened over the life, not what the first day looked like.
+    avg_damage_per_day: Damage = Damage.zero()
 
     def headline_days(self) -> float:
         """The conservative figure a fleet operator would act on.
@@ -153,28 +175,51 @@ def project(
     damage, soc = day_damage(DayStart(health=health, soc=soc))
     soc = _clamp01(soc)
     curve: list[tuple[float, float]] = [(0.0, health)]
+    state_curve: list[StatePoint] = [
+        (0.0, soc, state.crystal, state.corrosion_hours, state.shedding, health)
+    ]
     eol_days: float | None = None
+    total_damage_days = Damage.zero()
 
     day = 0
     while day < schedule.horizon_days:
         state = accumulate(state, damage, rates)
+        # `damage` is what was actually integrated into `state` on this
+        # calendar day, whether freshly probed or held from the last resim --
+        # summing it here (as opposed to the day-0 probe alone) is what makes
+        # `avg_damage_per_day` reflect the whole life, not just its start.
+        total_damage_days = total_damage_days + damage
         day += 1
         current = soh(state, rates)
         if day % CURVE_INTERVAL_DAYS == 0:
             curve.append((float(day), current))
+            state_curve.append((
+                float(day), soc, state.crystal, state.corrosion_hours,
+                state.shedding, current,
+            ))
         if current <= EOL_SOH:
             eol_days = float(day)
             curve.append((float(day), current))
+            state_curve.append((
+                float(day), soc, state.crystal, state.corrosion_hours,
+                state.shedding, current,
+            ))
             break
         if health - current >= resim_threshold:
             health = current
             damage, soc = day_damage(DayStart(health=health, soc=soc))
             soc = _clamp01(soc)
 
+    avg_damage_per_day = (
+        total_damage_days.scaled(1.0 / day) if day > 0 else damage
+    )
+
     return LifeEstimate(
         eol_days=eol_days,
         soh_curve=tuple(curve),
         scale_unfitted=not rates.fitted,
+        state_curve=tuple(state_curve),
+        avg_damage_per_day=avg_damage_per_day,
     )
 
 
@@ -222,4 +267,6 @@ def ensemble(
             "parameter uncertainty over the unfitted corrosion rate constant; "
             "not the stochastic distribution a world model would supply"
         ),
+        state_curve=point.state_curve,
+        avg_damage_per_day=point.avg_damage_per_day,
     )
