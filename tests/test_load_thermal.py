@@ -58,9 +58,41 @@ def test_the_hot_anchor_is_the_hotter_of_the_two_measured_nodes():
 def test_the_hot_anchor_follows_oil_when_the_engine_is_running_and_oil_leads():
     target = bay_target_c(coolant_c=40.0, oil_c=90.0, engine_running=1.0,
                           ambient_c=20.0)
-    # A 50 C gap is deep into the stagnant end, so the bay ends up close to
-    # the oil reading, not clipped down towards the cooler coolant.
-    assert target > 70.0
+    # A 50 C gap is deep into the stagnant end of the BOUNDED range, so the
+    # coupling sits at (or very near) COUPLING_STAGNANT -- pulled up towards
+    # the oil reading relative to the ventilated case, but nowhere near the
+    # oil value itself: the ceiling exists precisely so this does not track
+    # the hot anchor one-for-one.
+    assert 45.0 < target < 60.0
+
+
+def test_the_bay_never_exceeds_the_hot_anchor():
+    # The physical floor under this whole estimator: air surrounded by metal
+    # at temperature T cannot exceed T. Checked across engine on/off and
+    # across which of coolant/oil leads, including the gap-saturated case
+    # that used to let the coupling approach 1.0.
+    cases = [
+        dict(coolant_c=90.0, oil_c=90.5, engine_running=1.0, ambient_c=25.0),
+        dict(coolant_c=90.0, oil_c=212.0, engine_running=1.0, ambient_c=25.0),
+        dict(coolant_c=212.0, oil_c=90.0, engine_running=1.0, ambient_c=25.0),
+        dict(coolant_c=130.0, oil_c=128.8, engine_running=0.0, ambient_c=25.0),
+        dict(coolant_c=130.0, oil_c=138.4, engine_running=0.0, ambient_c=25.0),
+    ]
+    for case in cases:
+        target = bay_target_c(**case)
+        assert target <= max(case["coolant_c"], case["oil_c"]) + 1e-9
+
+
+def test_an_extreme_stagnant_oil_reading_stays_under_the_case_softening_point():
+    # This project's own worst measured sample: a stationary high-RPM event
+    # drives oil to ~212 C while coolant sits pinned at its 130 C cap, with
+    # essentially zero airflow (a large oil-coolant gap). Even there, the bay
+    # must stay below the ~130-150 C range where a polypropylene battery case
+    # softens -- a bay hot enough to melt the battery it is modelling cannot
+    # coexist with a multi-year life prediction.
+    target = bay_target_c(coolant_c=130.0, oil_c=212.0, engine_running=1.0,
+                          ambient_c=25.0)
+    assert target < 130.0
 
 
 def test_shutting_a_hot_engine_off_makes_the_bay_hotter_not_cooler():
