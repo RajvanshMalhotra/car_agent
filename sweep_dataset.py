@@ -34,6 +34,7 @@ from cell.aging import AgingRates, AgingState, soh
 from cell.dataset import FEATURES, TARGETS
 from cell.integrate import CellState, run_soak, run_trip
 from cell.life import DayStart, TripSchedule, ensemble
+from cell.sensors import SensorNoise
 from load.legacy import LEGACY_PROVENANCE, read_legacy
 from load.spec import BatteryScenario
 from load.trips import segment
@@ -128,6 +129,11 @@ def main(argv=None) -> int:
     parser.add_argument("--draws", type=int, default=8)
     parser.add_argument("--one", action="store_true",
                         help="run a single scenario and report timing only")
+    parser.add_argument("--noise-seed", type=int, default=0,
+                        help="RNG seed for the sensor-noise layer")
+    parser.add_argument("--noise-scale", type=float, default=0.0,
+                        help="sensor-noise sigma multiplier; 0.0 (default) is "
+                             "off, 1.0 is the declared sigmas, 2.0 is 2x, etc.")
     args = parser.parse_args(argv)
 
     driving, dropouts = load_driving(Path(args.trajectory))
@@ -150,6 +156,11 @@ def main(argv=None) -> int:
     seen_within = set()
     index = 0
     started = time.time()
+
+    # Noise applies ONLY to within_trip.csv, the emitted 1 Hz "sensor" rows.
+    # scenario_life.csv is a model output (damage, projected end of life), not
+    # a measurement, so it stays exact regardless of --noise-scale.
+    noise = SensorNoise(seed=args.noise_seed, scale=args.noise_scale)
 
     for ambient_c in AMBIENTS_C:
         for hvac, lights in ACCESSORIES:
@@ -197,7 +208,7 @@ def main(argv=None) -> int:
                                 "t_bat_c": step.t_bat_c, "soc": step.soc,
                                 "r_int_ohm": step.r_int_ohm,
                             })
-                            within_rows.append(row)
+                            within_rows.append(noise.apply(row))
                 index += 1
                 print(f"  [{index:2d}] {name:34s} eol={life.eol_days} days", flush=True)
 
@@ -242,6 +253,7 @@ def main(argv=None) -> int:
             "fitted": rates.fitted,
         },
         "channels": dict(LEGACY_PROVENANCE),
+        "sensor_noise": noise.manifest(),
         "caveats": [
             "Absolute days are NOT validated. No battery in this project reached "
             "end of life and no full-life dataset has been fitted against, so "
@@ -260,6 +272,13 @@ def main(argv=None) -> int:
             "The driving channels are IDENTICAL across scenarios -- one recording "
             "replayed under different ambient and accessory conditions. This is "
             "an ambient/duty-cycle sweep, not a driving-style sweep.",
+            "Sensor noise (see sensor_noise above) simulates measurement error "
+            "on MEASURABLE channels only (speed_mps, rpm, throttle, coolant_c, "
+            "i_bat_a, v_bat_v, t_bat_c) in within_trip.csv; LATENT channels "
+            "(soc, r_int_ohm, t_bay_c, soh) and every scenario_life.csv figure "
+            "stay exact. This does not make the underlying data any less "
+            "deterministic -- it is still a physics model, and a large enough "
+            "network can still learn it from enough noisy rows.",
         ],
     }
     (out / "dataset.json").write_text(json.dumps(sidecar, indent=2, sort_keys=True))
