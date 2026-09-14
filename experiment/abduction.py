@@ -23,26 +23,50 @@ For every held-out (test-scenario) window in `windows_test.npz`:
      different action, which is the one thing a real dataset can never give
      you (see the module docstring in the experiment brief).
 
-Three errors, all standardized MSE over the `K`-day rollout of
+Four errors, all standardized MSE over the `K`-day rollout of
 `OBSERVABLE_FEATURES` (same normalization Gate 2 used, for a like-for-like
 scale):
 
-  FACTUAL       -- model rollout vs ODE, under the FACTUAL action sequence.
-                   How well the model predicts at all.
-  COUNTERFACTUAL-- model rollout vs ODE, under the FLIPPED action sequence,
-                   using the ABDUCTED latent.
-  INTERVENTIONAL-- model rollout vs the SAME ODE counterfactual, but with the
-                   latent replaced by the prior mean (zero vector) -- what
-                   you get WITHOUT abduction, i.e. an action-conditioned
-                   average over whatever hidden states the training
-                   distribution contains.
+  FACTUAL                -- model rollout vs ODE, under the FACTUAL action
+                             sequence. How well the model predicts at all.
+  COUNTERFACTUAL abducted-- model rollout vs ODE, under the FLIPPED action
+                             sequence, using the ABDUCTED (full-window) latent.
+  COUNTERFACTUAL lastday -- SAME flipped action sequence, but the latent comes
+                             from re-encoding a window where every one of the
+                             60 days is a COPY OF THE FINAL DAY -- the same
+                             architecture, the same encoder, the same amount
+                             of per-day information, with all path dependence
+                             erased. This is the control that actually
+                             isolates abduction: a model that just reads off
+                             "today's SoC and temperature look like X" would
+                             score identically here and on the abducted
+                             condition, because that information survives the
+                             flattening. Only genuinely PATH-dependent
+                             information (what happened over the 60 days, not
+                             just where it ended up) can make the abducted
+                             latent do better than this one.
+  INTERVENTIONAL zero    -- SAME flipped action sequence, latent replaced by
+                             the prior mean (zero vector) -- the weakest
+                             possible control (no information at all). Kept
+                             for continuity with the first two runs of this
+                             experiment, but see the report for why it is too
+                             weak to support an abduction claim on its own:
+                             ANY non-dead latent beats it, whether or not what
+                             it carries is path-dependent.
+
+**The headline comparison is abducted vs LASTDAY, not abducted vs zero.**
+Beating zero only shows the latent isn't dead (Gate 2b already establishes
+this). Beating lastday is the actual claim under test: that the model
+recovered something about the window's HISTORY that the final day alone does
+not contain -- the definition of the hidden, path-dependent `crystal` state
+this experiment is about.
 
 Interpretation (stated plainly, in the printed summary and the JSON output):
-counterfactual error close to factual error AND clearly below the
-interventional baseline means the model is doing abduction; counterfactual
-error close to the interventional baseline means it is not -- it is
-producing an interventional average, not a genuine counterfactual, and that
-is the stronger, more publishable finding if that is what comes out.
+abducted clearly better than lastday means the model is doing genuine
+path-dependent abduction; abducted no better than lastday means it is not --
+it is conditioning on cheap, currently-observable state, and whatever
+counterfactual improvement it shows over the zero baseline is fully explained
+without invoking any hidden-state inference at all.
 
 Run: `python3 -m experiment.abduction --dataset-dir runs/experiment`
 """
@@ -150,6 +174,26 @@ def standardize(x: np.ndarray, mean: np.ndarray, std: np.ndarray) -> np.ndarray:
     return (x - mean) / std
 
 
+def flatten_to_last_day(window: np.ndarray) -> np.ndarray:
+    """Replace every day in a `[L, F]` window with a copy of its final day.
+
+    Holds the encoder architecture and the per-day information volume fixed
+    (still an `L`-day sequence, still the same features) and removes ONLY the
+    path dependence: every day now carries the same values, so an encoder
+    that reads off "what does the most recent day look like" gets identical
+    input to the real window, while an encoder that integrates HOW the
+    window got there gets a degenerate, historyless one. This is why (b) --
+    re-encoding a flattened window -- was chosen over (a) -- a learned
+    last-day-to-latent regressor: (a) would need its own training run and
+    would confound "what the map learned to predict" with "what history
+    contains", where (b) reuses the SAME trained encoder unmodified and asks
+    it to do the one thing that isolates the question this control exists
+    for.
+    """
+    last_day = window[-1:, :]
+    return np.repeat(last_day, window.shape[0], axis=0)
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dataset-dir", default="runs/experiment")
@@ -178,7 +222,7 @@ def main(argv=None) -> int:
     if args.max_examples:
         n = min(n, args.max_examples)
 
-    factual_errors, cf_errors, interventional_errors = [], [], []
+    factual_errors, cf_errors, lastday_errors, interventional_errors = [], [], [], []
     per_example = []
 
     for idx in range(n):
@@ -211,6 +255,16 @@ def main(argv=None) -> int:
             mu, _logvar = model.encode(win_actions_t, win_obs_t)
             prev_obs0 = win_obs_t[:, -1, :]
 
+            # Last-day-only control: same encoder, a window with all path
+            # dependence erased (every day replaced by the final day).
+            lastday_actions_t = torch.tensor(
+                flatten_to_last_day(standardize(window_actions, action_mean, action_std)),
+            ).unsqueeze(0)
+            lastday_obs_t = torch.tensor(
+                flatten_to_last_day(standardize(window_observables, obs_mean, obs_std)),
+            ).unsqueeze(0)
+            lastday_mu, _lastday_logvar = model.encode(lastday_actions_t, lastday_obs_t)
+
             factual_actions_t = torch.tensor(
                 standardize(factual_actions_raw, action_mean, action_std),
             ).unsqueeze(0)
@@ -220,6 +274,7 @@ def main(argv=None) -> int:
 
             pred_factual = model.rollout(mu, factual_actions_t, prev_obs0)
             pred_cf_abducted = model.rollout(mu, cf_actions_t, prev_obs0)
+            pred_cf_lastday = model.rollout(lastday_mu, cf_actions_t, prev_obs0)
             zero_latent = torch.zeros_like(mu)
             pred_cf_interventional = model.rollout(zero_latent, cf_actions_t, prev_obs0)
 
@@ -228,64 +283,175 @@ def main(argv=None) -> int:
 
         f_err = float(((pred_factual.squeeze(0).numpy() - true_factual_std) ** 2).mean())
         c_err = float(((pred_cf_abducted.squeeze(0).numpy() - true_cf_std) ** 2).mean())
+        l_err = float(((pred_cf_lastday.squeeze(0).numpy() - true_cf_std) ** 2).mean())
         i_err = float(((pred_cf_interventional.squeeze(0).numpy() - true_cf_std) ** 2).mean())
 
         factual_errors.append(f_err)
         cf_errors.append(c_err)
+        lastday_errors.append(l_err)
         interventional_errors.append(i_err)
         per_example.append({
             "scenario": name, "end_day": end,
             "true_crystal": float(arr["crystal"][end]),
             "factual_mse": f_err, "counterfactual_mse": c_err,
-            "interventional_mse": i_err,
+            "lastday_mse": l_err, "interventional_mse": i_err,
+            "abducted_beats_lastday": c_err < l_err,
         })
 
         if (idx + 1) % 200 == 0 or idx == n - 1:
             print(f"[{idx + 1}/{n}] running means: "
                   f"factual={np.mean(factual_errors):.4f} "
                   f"counterfactual={np.mean(cf_errors):.4f} "
+                  f"lastday={np.mean(lastday_errors):.4f} "
                   f"interventional={np.mean(interventional_errors):.4f}", flush=True)
 
     factual_mean = float(np.mean(factual_errors))
     cf_mean = float(np.mean(cf_errors))
+    lastday_mean = float(np.mean(lastday_errors))
     interventional_mean = float(np.mean(interventional_errors))
 
-    # How much of the interventional-vs-factual gap the abducted latent closes.
-    gap = interventional_mean - factual_mean
-    closed = (interventional_mean - cf_mean) / gap if abs(gap) > 1e-12 else float("nan")
-
-    is_abducting = (
-        cf_mean < interventional_mean
-        and abs(cf_mean - factual_mean) < abs(interventional_mean - factual_mean)
+    # HEADLINE: how much of the factual-to-lastday gap the abducted latent
+    # closes. This, not the gap against zero, is the number that isolates
+    # genuine path-dependent abduction from cheap current-state conditioning.
+    lastday_gap = lastday_mean - factual_mean
+    closed_vs_lastday = (
+        (lastday_mean - cf_mean) / lastday_gap if abs(lastday_gap) > 1e-12 else float("nan")
     )
+
+    # Kept for continuity with the first two runs -- see module docstring for
+    # why this comparison alone cannot support an abduction claim.
+    zero_gap = interventional_mean - factual_mean
+    closed_vs_zero = (
+        (interventional_mean - cf_mean) / zero_gap if abs(zero_gap) > 1e-12 else float("nan")
+    )
+
+    win_count = sum(1 for e in per_example if e["abducted_beats_lastday"])
+    win_rate_vs_lastday = win_count / n
+
+    # A mean-only comparison is not enough: MSE means are easily dragged by a
+    # minority of high-error examples, so "abducted beats lastday on average"
+    # can coexist with "abducted loses to lastday on most individual
+    # windows" -- that combination is exactly what a skewed, outlier-driven
+    # aggregate looks like, not a consistent per-battery effect. The
+    # per-example win rate is the check for that: chance is 50%, so it must
+    # sit CLEARLY above 50% (not just the mean beating lastday) before this
+    # counts as abduction rather than noise.
+    WIN_RATE_ABOVE_CHANCE = 0.55
+    aggregate_favors_abducted = (
+        cf_mean < lastday_mean
+        and abs(cf_mean - factual_mean) < abs(lastday_mean - factual_mean)
+    )
+    is_abducting = aggregate_favors_abducted and win_rate_vs_lastday > WIN_RATE_ABOVE_CHANCE
+
+    # Five-bin breakdown by true crystal value: if abduction is real it
+    # should help MOST mid-transition, where crystal is changing but SoC and
+    # temperature look ordinary -- exactly where the lastday control has no
+    # way to see it and the abducted latent would have to.
+    n_bins = 5
+    bin_edges = np.linspace(0.0, 1.0, n_bins + 1)
+    crystal_bins = []
+    for b in range(n_bins):
+        lo, hi = bin_edges[b], bin_edges[b + 1]
+        in_bin = [
+            e for e in per_example
+            if lo <= e["true_crystal"] < hi or (b == n_bins - 1 and e["true_crystal"] == hi)
+        ]
+        if not in_bin:
+            crystal_bins.append({
+                "range": f"[{lo:.1f},{hi:.1f})", "n": 0,
+            })
+            continue
+        f_b = float(np.mean([e["factual_mse"] for e in in_bin]))
+        c_b = float(np.mean([e["counterfactual_mse"] for e in in_bin]))
+        l_b = float(np.mean([e["lastday_mse"] for e in in_bin]))
+        i_b = float(np.mean([e["interventional_mse"] for e in in_bin]))
+        gap_b = l_b - f_b
+        closed_b = (l_b - c_b) / gap_b if abs(gap_b) > 1e-12 else float("nan")
+        wins_b = sum(1 for e in in_bin if e["abducted_beats_lastday"])
+        crystal_bins.append({
+            "range": f"[{lo:.1f},{hi:.1f})", "n": len(in_bin),
+            "factual_mse": f_b, "counterfactual_mse": c_b,
+            "lastday_mse": l_b, "interventional_mse": i_b,
+            "fraction_of_factual_to_lastday_gap_closed": closed_b,
+            "win_rate_abducted_vs_lastday": wins_b / len(in_bin),
+        })
+
+    if is_abducting:
+        verdict = (
+            "GENUINE PATH-DEPENDENT ABDUCTION: counterfactual error with the "
+            "abducted latent is close to factual error, clearly below the "
+            "last-day-only control on average, AND the abducted latent wins "
+            "on a clear majority of individual windows -- the model is using "
+            "information about the window's HISTORY that the final day alone "
+            "does not contain."
+        )
+    elif aggregate_favors_abducted:
+        verdict = (
+            "NOT ABDUCTION -- AGGREGATE IS NOISE: the mean counterfactual "
+            f"error looks better than lastday ({closed_vs_lastday:.1%} of the "
+            "factual-to-lastday gap closed), but the per-example win rate is "
+            f"only {win_rate_vs_lastday:.1%} (chance is 50%), not clearly "
+            "above it. A mean improvement with a win rate at or below chance "
+            "means a minority of high-error examples is dragging the "
+            "average, not that the abducted latent is consistently better "
+            "per battery. This is exactly the failure mode the win-rate "
+            "check exists to catch, and it fails it here."
+        )
+    else:
+        verdict = (
+            "NOT ABDUCTION, STATE-CONDITIONING: counterfactual error with the "
+            "abducted latent is no better than the last-day-only control, "
+            "which has the same architecture and the same per-day "
+            "information but zero path dependence. Whatever counterfactual "
+            "improvement the abducted latent shows over the zero baseline is "
+            "fully explained by reading off the window's most recent "
+            "observable state -- not by inferring anything about its "
+            "history."
+        )
 
     result = {
         "n_examples": n,
         "rollout_k_days": k,
         "factual_mse": factual_mean,
         "counterfactual_mse": cf_mean,
+        "lastday_mse": lastday_mean,
         "interventional_mse": interventional_mean,
-        "fraction_of_gap_closed_by_abduction": closed,
-        "verdict": (
-            "ABDUCTING: counterfactual error is close to factual error and "
-            "clearly below the interventional baseline."
-            if is_abducting else
-            "NOT ABDUCTING: counterfactual error is no better than the "
-            "interventional (prior-latent) baseline -- the model is producing "
-            "an interventional average conditioned on the action sequence, "
-            "not a genuine per-battery counterfactual."
-        ),
+        "fraction_of_factual_to_lastday_gap_closed": closed_vs_lastday,
+        "fraction_of_factual_to_zero_gap_closed": closed_vs_zero,
+        "win_rate_abducted_vs_lastday": win_rate_vs_lastday,
+        "win_count_abducted_vs_lastday": f"{win_count}/{n}",
+        "crystal_bin_breakdown": crystal_bins,
+        "verdict": verdict,
         "per_example": per_example,
     }
     (base / "abduction_results.json").write_text(json.dumps(result, indent=2))
 
-    print("\nSTEP 3 -- abduction test:")
+    print("\nSTEP 3 -- abduction test (four-way comparison):")
     print(f"  n_examples:                {n}")
     print(f"  FACTUAL error:             {factual_mean:.5f}")
-    print(f"  COUNTERFACTUAL error:      {cf_mean:.5f}")
-    print(f"  INTERVENTIONAL baseline:   {interventional_mean:.5f}")
-    print(f"  fraction of gap closed:    {closed:.1%}" if not np.isnan(closed) else "  fraction of gap closed: n/a (no gap)")
-    print(f"\n  {result['verdict']}")
+    print(f"  COUNTERFACTUAL abducted:   {cf_mean:.5f}")
+    print(f"  COUNTERFACTUAL lastday:    {lastday_mean:.5f}   <-- the control that matters")
+    print(f"  INTERVENTIONAL zero:       {interventional_mean:.5f}")
+    print(f"  fraction of factual->lastday gap closed: "
+          f"{closed_vs_lastday:.1%}" if not np.isnan(closed_vs_lastday) else
+          "  fraction of factual->lastday gap closed: n/a (no gap)")
+    print(f"  fraction of factual->zero gap closed (weak control): "
+          f"{closed_vs_zero:.1%}" if not np.isnan(closed_vs_zero) else
+          "  fraction of factual->zero gap closed: n/a (no gap)")
+    print(f"  win rate, abducted vs lastday: {win_count}/{n} ({win_rate_vs_lastday:.1%})")
+    print("\n  crystal-bin breakdown:")
+    for row in crystal_bins:
+        if row["n"] == 0:
+            print(f"    {row['range']}: n=0")
+            continue
+        closed_str = (
+            f"{row['fraction_of_factual_to_lastday_gap_closed']:.1%}"
+            if not np.isnan(row["fraction_of_factual_to_lastday_gap_closed"]) else "n/a"
+        )
+        print(f"    {row['range']}: n={row['n']:4d}  factual={row['factual_mse']:.4f}  "
+              f"abducted={row['counterfactual_mse']:.4f}  lastday={row['lastday_mse']:.4f}  "
+              f"gap_closed={closed_str}  win_rate={row['win_rate_abducted_vs_lastday']:.1%}")
+    print(f"\n  {verdict}")
     print(f"\nwrote {base / 'abduction_results.json'}")
     return 0
 
