@@ -46,7 +46,26 @@ probed for abduction. This script reports the comparison and exits either
 way; **Gate 2b** (`experiment/gate2b.py`) is the separate, mandatory check
 for whether the latent that got there is doing any work.
 
-Run: `python3 -m experiment.train_world_model --dataset-dir runs/experiment`
+**The counterfactual-curriculum fix (on top of multi-step training).** The
+corrected Step 3 abduction test found the multi-step-trained model was
+conditioning on cheap, currently-observable state, not genuinely abducting
+history -- see the experiment report's Section 5.2. The suspected cause:
+every training example only ever unrolled under the FACTUAL action
+continuation, so nothing ever forced the latent to distinguish "what
+happened" from "what state resulted" under a schedule that didn't actually
+happen. This script now also unrolls the SAME encoded `z` under a
+RANDOMIZED counterfactual action sequence per training window
+(`experiment/build_counterfactual_targets.py`'s `windows_train_cf.npz` --
+run that script first) and trains against its exact ODE ground truth, in
+addition to the factual continuation. If a single `z` has to explain two
+divergent futures from the same true history, "remember the observable
+trend" stops being sufficient on its own.
+
+Run:
+```
+python3 -m experiment.build_counterfactual_targets --dataset-dir runs/experiment  # once
+python3 -m experiment.train_world_model --dataset-dir runs/experiment
+```
 """
 
 from __future__ import annotations
@@ -74,6 +93,12 @@ BATCH_SIZE = 128
 EPOCHS = 100
 LR = 1e-3
 SEED = 0
+
+#: Weight on the counterfactual-rollout term relative to the factual one.
+#: 1.0 (equal weighting) so the curriculum can't be satisfied by just
+#: getting better at the factual continuation and coasting on the
+#: counterfactual one -- both have to improve together, from the same `z`.
+CF_LOSS_WEIGHT = 1.0
 
 
 def _standardize_fit(x: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
@@ -133,6 +158,23 @@ def main(argv=None) -> int:
     train = load_split(base, "train")
     test = load_split(base, "test")
 
+    cf_path = base / "windows_train_cf.npz"
+    if not cf_path.exists():
+        raise FileNotFoundError(
+            f"{cf_path} not found -- run "
+            "`python3 -m experiment.build_counterfactual_targets "
+            f"--dataset-dir {base}` first. The counterfactual-curriculum "
+            "training loop needs a precomputed randomized counterfactual "
+            "continuation (with exact ODE ground truth) for every training "
+            "window; see this module's docstring for why."
+        )
+    train_cf = dict(np.load(cf_path, allow_pickle=True))
+    assert np.array_equal(train_cf["scenario"], train["scenario"]) and \
+        np.array_equal(train_cf["end_day"], train["end_day"]), (
+        f"{cf_path} does not align row-for-row with windows_train.npz -- "
+        "rebuild it with experiment.build_counterfactual_targets."
+    )
+
     scenarios, _order = load_daily_trajectory(base / "daily_trajectory.csv")
     train_future_actions, train_future_obs = build_future_arrays(train, scenarios, horizon)
     test_future_actions, test_future_obs = build_future_arrays(test, scenarios, horizon)
@@ -160,6 +202,12 @@ def main(argv=None) -> int:
 
     train_t = prep(train, train_future_actions, train_future_obs)
     test_t = prep(test, test_future_actions, test_future_obs)
+    train_t["cf_actions"] = torch.tensor(
+        _apply(train_cf["cf_actions"], action_mean, action_std), dtype=torch.float32,
+    )
+    train_t["cf_observables"] = torch.tensor(
+        _apply(train_cf["cf_observables"], obs_mean, obs_std), dtype=torch.float32,
+    )
 
     n_action = train["actions"].shape[-1]
     n_obs = train["observables"].shape[-1]
@@ -181,34 +229,48 @@ def main(argv=None) -> int:
         model.train()
         kl_weight_t = KL_WEIGHT * min(1.0, (epoch + 1) / KL_WARMUP_EPOCHS)
         perm = rng.permutation(n_train)
-        epoch_recon, epoch_kl, n_batches = 0.0, 0.0, 0
+        epoch_recon_f, epoch_recon_cf, epoch_kl, n_batches = 0.0, 0.0, 0.0, 0
         for start in range(0, n_train, BATCH_SIZE):
             idx = perm[start:start + BATCH_SIZE]
             actions = train_t["actions"][idx].to(device)
             observables = train_t["observables"][idx].to(device)
             future_actions = train_t["future_actions"][idx].to(device)
             future_observables = train_t["future_observables"][idx].to(device)
+            cf_actions = train_t["cf_actions"][idx].to(device)
+            cf_observables = train_t["cf_observables"][idx].to(device)
 
-            pred, mu, logvar = model.encode_and_rollout(
-                actions, observables, future_actions, sample=True,
-            )
-            recon = mse(pred, future_observables)
+            # One encode, one sampled z, TWO rollouts from it: the factual
+            # continuation and a randomized counterfactual one. Both losses
+            # are computed against the same z on purpose -- see the module
+            # docstring on why a single z having to explain two divergent,
+            # ODE-true futures is the actual curriculum fix being tested.
+            mu, logvar = model.encode(actions, observables)
+            z = model.reparameterize(mu, logvar)
+            prev_obs0 = observables[:, -1, :]
+            pred_factual = model.rollout(z, future_actions, prev_obs0)
+            pred_cf = model.rollout(z, cf_actions, prev_obs0)
+
+            recon_f = mse(pred_factual, future_observables)
+            recon_cf = mse(pred_cf, cf_observables)
             kl = kl_free_bits(mu, logvar, free_bits=FREE_BITS)
-            loss = recon + kl_weight_t * kl
+            loss = recon_f + CF_LOSS_WEIGHT * recon_cf + kl_weight_t * kl
 
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
 
-            epoch_recon += recon.item()
+            epoch_recon_f += recon_f.item()
+            epoch_recon_cf += recon_cf.item()
             epoch_kl += kl.item()
             n_batches += 1
         history.append({
-            "epoch": epoch, "recon_mse": epoch_recon / n_batches,
+            "epoch": epoch, "recon_mse_factual": epoch_recon_f / n_batches,
+            "recon_mse_counterfactual": epoch_recon_cf / n_batches,
             "kl_free_bits": epoch_kl / n_batches, "kl_weight": kl_weight_t,
         })
         if epoch % 10 == 0 or epoch == args.epochs - 1:
-            print(f"epoch {epoch:3d}  recon_mse={history[-1]['recon_mse']:.4f}  "
+            print(f"epoch {epoch:3d}  recon_factual={history[-1]['recon_mse_factual']:.4f}  "
+                  f"recon_cf={history[-1]['recon_mse_counterfactual']:.4f}  "
                   f"kl_free_bits={history[-1]['kl_free_bits']:.4f}  "
                   f"kl_weight={kl_weight_t:.4f}", flush=True)
 
@@ -294,7 +356,7 @@ def main(argv=None) -> int:
             "latent_dim": LATENT_DIM, "enc_hidden": ENC_HIDDEN,
             "dec_hidden": DEC_HIDDEN, "kl_weight": KL_WEIGHT,
             "free_bits": FREE_BITS, "kl_warmup_epochs": KL_WARMUP_EPOCHS,
-            "rollout_horizon_days": horizon,
+            "rollout_horizon_days": horizon, "cf_loss_weight": CF_LOSS_WEIGHT,
             "batch_size": BATCH_SIZE, "lr": LR, "seed": SEED,
         },
     }, indent=2))
