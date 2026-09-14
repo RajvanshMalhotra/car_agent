@@ -1,21 +1,50 @@
 #!/usr/bin/env python3
 """Step 2: train the stochastic-latent world model, then run Gate 2.
 
-Trains `experiment.model.WorldModel` to predict the SINGLE next day's
-`OBSERVABLE_FEATURES` from a 60-day window plus the next day's action, with a
-standard VAE-style KL penalty on the latent. Never sees `crystal`,
-`corrosion_hours`, `shedding`, or `soh` -- see `experiment/windows.py` for
-what the window tensors actually contain.
+**Multi-step closed-loop training (the fix for the collapse).** A first
+version of this script trained SINGLE-step next-day prediction, decoder
+conditioned on the TRUE previous-day observable, and that let the posterior
+collapse to the prior -- see `experiment/model.py`'s module docstring and
+the experiment report for the full diagnosis. This version instead trains
+the exact same `WorldModel.rollout()` path Step 3 (`experiment/abduction.py`)
+evaluates: the window is encoded once, then the decoder is unrolled
+`ROLLOUT_HORIZON` days in CLOSED LOOP -- each day's `prev_obs` input is the
+model's OWN previous prediction, not ground truth (`WorldModel.encode_and_rollout`).
+Once the day-30 prediction depends on getting days 1-29 right using only
+what the encoder put in `z`, a next-day shortcut that ignores the latent no
+longer minimizes the loss.
 
-**Gate 2.** Reports next-step prediction error (mean squared error over the
-standardized observable vector) for:
-  (a) the model
-  (b) persistence -- predict the window's last observed day, unchanged
-  (c) the training-set mean -- predict the same constant vector every time
-If the model does not clearly beat (a) < (b) and (a) < (c), the brief says
-stop: a model that has not learned the dynamics cannot be meaningfully
+`ROLLOUT_HORIZON` is set to `windows_meta.json`'s `rollout_k` (30 days) --
+the same runway every window was built with and the same horizon the
+abduction test rolls out over, so training and evaluation always agree on
+what "the rollout" means.
+
+**KL scheme actually used: free-bits, PLUS a linear warmup, belt and
+braces.** `experiment/model.py:kl_free_bits` floors every latent
+dimension's KL at `FREE_BITS` (0.15) nats -- a PERMANENT floor with zero
+gradient below it, so collapse to the prior on any one dimension is no
+longer reachable no matter how long training runs (see that function's
+docstring). On top of that floor this script also linearly ramps the KL
+weight from 0 up to `KL_WEIGHT` over the first `KL_WARMUP_EPOCHS` epochs,
+so the reconstruction loss gets first pick of the optimizer's attention
+before any regularization pressure arrives at all. Free bits is the
+structural fix (it is what makes collapse actually impossible); the warmup
+is an early-training convenience on top of it, not a replacement for it.
+
+**Gate 2 is now the multi-step rollout diagnostic**, since that is what the
+model is actually trained to do: reports rollout MSE (standardized, averaged
+over the whole `ROLLOUT_HORIZON`-day horizon and all `OBSERVABLE_FEATURES`)
+for (a) the model (posterior mean, no sampling), (b) persistence -- repeat
+the window's last observed day for every future day, and (c) the
+training-set mean future observable. The single-step `forward()` path is
+still reported alongside, purely as a diagnostic matching what the FIRST
+(collapsed) run measured -- it is never trained against here.
+
+If the model does not clearly beat both multi-step baselines, the brief
+says stop: a model that has not learned the dynamics cannot be meaningfully
 probed for abduction. This script reports the comparison and exits either
-way; it does not decide to keep going, the caller does after reading Gate 2.
+way; **Gate 2b** (`experiment/gate2b.py`) is the separate, mandatory check
+for whether the latent that got there is doing any work.
 
 Run: `python3 -m experiment.train_world_model --dataset-dir runs/experiment`
 """
@@ -31,14 +60,18 @@ import numpy as np
 import torch
 from torch import nn
 
-from experiment.model import WorldModel, kl_to_standard_normal
+from experiment.calendar_sim import ACTION_FEATURES, OBSERVABLE_FEATURES
+from experiment.data import load_daily_trajectory
+from experiment.model import WorldModel, kl_free_bits
 
 KL_WEIGHT = 0.01
+FREE_BITS = 0.15
+KL_WARMUP_EPOCHS = 10
 LATENT_DIM = 8
 ENC_HIDDEN = 32
 DEC_HIDDEN = 32
 BATCH_SIZE = 128
-EPOCHS = 60
+EPOCHS = 100
 LR = 1e-3
 SEED = 0
 
@@ -58,6 +91,31 @@ def load_split(base: Path, split: str) -> dict[str, np.ndarray]:
     return dict(np.load(base / f"windows_{split}.npz", allow_pickle=True))
 
 
+def build_future_arrays(
+    windows: dict[str, np.ndarray], scenarios: dict, horizon: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    """The `horizon` days of action/observable AFTER each window's end day.
+
+    Mirrors `experiment/abduction.py`'s own lookup (`arr[f][end+1:end+1+k]`)
+    exactly, so training and the abduction test read the identical
+    continuation for a given (scenario, end_day) -- this is what lets Gate 2
+    here and Step 3's FACTUAL rollout be directly comparable.
+    """
+    n = windows["scenario"].shape[0]
+    n_action, n_obs = len(ACTION_FEATURES), len(OBSERVABLE_FEATURES)
+    future_actions = np.zeros((n, horizon, n_action), dtype=np.float32)
+    future_observables = np.zeros((n, horizon, n_obs), dtype=np.float32)
+    for idx in range(n):
+        name = str(windows["scenario"][idx])
+        end = int(windows["end_day"][idx])
+        arr = scenarios[name]
+        for j, f in enumerate(ACTION_FEATURES):
+            future_actions[idx, :, j] = arr[f][end + 1:end + 1 + horizon]
+        for j, f in enumerate(OBSERVABLE_FEATURES):
+            future_observables[idx, :, j] = arr[f][end + 1:end + 1 + horizon]
+    return future_actions, future_observables
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dataset-dir", default="runs/experiment")
@@ -69,26 +127,39 @@ def main(argv=None) -> int:
     torch.manual_seed(SEED)
     np.random.seed(SEED)
 
+    windows_meta = json.loads((base / "windows_meta.json").read_text())
+    horizon = windows_meta["rollout_k"]
+
     train = load_split(base, "train")
     test = load_split(base, "test")
+
+    scenarios, _order = load_daily_trajectory(base / "daily_trajectory.csv")
+    train_future_actions, train_future_obs = build_future_arrays(train, scenarios, horizon)
+    test_future_actions, test_future_obs = build_future_arrays(test, scenarios, horizon)
 
     action_mean, action_std = _standardize_fit(train["actions"])
     obs_mean, obs_std = _standardize_fit(train["observables"])
 
-    def prep(d: dict[str, np.ndarray]) -> dict[str, torch.Tensor]:
+    def prep(
+        d: dict[str, np.ndarray], future_actions: np.ndarray, future_obs: np.ndarray,
+    ) -> dict[str, torch.Tensor]:
         actions = _apply(d["actions"], action_mean, action_std)
         observables = _apply(d["observables"], obs_mean, obs_std)
         next_action = _apply(d["next_action"], action_mean, action_std)
         next_observable = _apply(d["next_observable"], obs_mean, obs_std)
+        fut_actions = _apply(future_actions, action_mean, action_std)
+        fut_obs = _apply(future_obs, obs_mean, obs_std)
         return {
             "actions": torch.tensor(actions, dtype=torch.float32),
             "observables": torch.tensor(observables, dtype=torch.float32),
             "next_action": torch.tensor(next_action, dtype=torch.float32),
             "next_observable": torch.tensor(next_observable, dtype=torch.float32),
+            "future_actions": torch.tensor(fut_actions, dtype=torch.float32),
+            "future_observables": torch.tensor(fut_obs, dtype=torch.float32),
         }
 
-    train_t = prep(train)
-    test_t = prep(test)
+    train_t = prep(train, train_future_actions, train_future_obs)
+    test_t = prep(test, test_future_actions, test_future_obs)
 
     n_action = train["actions"].shape[-1]
     n_obs = train["observables"].shape[-1]
@@ -108,19 +179,22 @@ def main(argv=None) -> int:
 
     for epoch in range(args.epochs):
         model.train()
+        kl_weight_t = KL_WEIGHT * min(1.0, (epoch + 1) / KL_WARMUP_EPOCHS)
         perm = rng.permutation(n_train)
         epoch_recon, epoch_kl, n_batches = 0.0, 0.0, 0
         for start in range(0, n_train, BATCH_SIZE):
             idx = perm[start:start + BATCH_SIZE]
             actions = train_t["actions"][idx].to(device)
             observables = train_t["observables"][idx].to(device)
-            next_action = train_t["next_action"][idx].to(device)
-            next_observable = train_t["next_observable"][idx].to(device)
+            future_actions = train_t["future_actions"][idx].to(device)
+            future_observables = train_t["future_observables"][idx].to(device)
 
-            pred, mu, logvar = model(actions, observables, next_action, sample=True)
-            recon = mse(pred, next_observable)
-            kl = kl_to_standard_normal(mu, logvar)
-            loss = recon + KL_WEIGHT * kl
+            pred, mu, logvar = model.encode_and_rollout(
+                actions, observables, future_actions, sample=True,
+            )
+            recon = mse(pred, future_observables)
+            kl = kl_free_bits(mu, logvar, free_bits=FREE_BITS)
+            loss = recon + kl_weight_t * kl
 
             optimizer.zero_grad()
             loss.backward()
@@ -131,35 +205,47 @@ def main(argv=None) -> int:
             n_batches += 1
         history.append({
             "epoch": epoch, "recon_mse": epoch_recon / n_batches,
-            "kl": epoch_kl / n_batches,
+            "kl_free_bits": epoch_kl / n_batches, "kl_weight": kl_weight_t,
         })
         if epoch % 10 == 0 or epoch == args.epochs - 1:
             print(f"epoch {epoch:3d}  recon_mse={history[-1]['recon_mse']:.4f}  "
-                  f"kl={history[-1]['kl']:.4f}", flush=True)
+                  f"kl_free_bits={history[-1]['kl_free_bits']:.4f}  "
+                  f"kl_weight={kl_weight_t:.4f}", flush=True)
 
-    # ---- Gate 2: next-step prediction error vs persistence and mean -------
+    # ---- Gate 2: multi-step rollout error vs persistence and mean ---------
     model.eval()
     with torch.no_grad():
         actions = test_t["actions"].to(device)
         observables = test_t["observables"].to(device)
+        future_actions = test_t["future_actions"].to(device)
+        future_observables = test_t["future_observables"].to(device)
+
+        pred, mu, logvar = model.encode_and_rollout(
+            actions, observables, future_actions, sample=False,
+        )
+        model_mse = mse(pred, future_observables).item()
+
+        # Persistence: repeat the window's last observed day for every future day.
+        last_obs = observables[:, -1, :].unsqueeze(1)
+        persistence_pred = last_obs.expand_as(future_observables)
+        persistence_mse = mse(persistence_pred, future_observables).item()
+
+        # Training-set mean future observable, broadcast over the horizon.
+        train_mean_obs = train_t["future_observables"].mean(dim=(0, 1), keepdim=True)
+        mean_pred = train_mean_obs.expand_as(future_observables).to(device)
+        mean_mse = mse(mean_pred, future_observables).item()
+
+        # Per-feature breakdown, standardized units, averaged over the horizon.
+        per_feature_model = ((pred - future_observables) ** 2).mean(dim=(0, 1))
+        per_feature_persist = ((persistence_pred - future_observables) ** 2).mean(dim=(0, 1))
+
+        # Single-step diagnostic (never trained against) -- for comparison
+        # against the FIRST run's collapsed numbers only.
         next_action = test_t["next_action"].to(device)
         next_observable = test_t["next_observable"].to(device)
+        single_pred, _mu1, _logvar1 = model(actions, observables, next_action, sample=False)
+        single_step_mse = mse(single_pred, next_observable).item()
 
-        pred, mu, logvar = model(actions, observables, next_action, sample=False)
-        model_mse = mse(pred, next_observable).item()
-
-        persistence_pred = observables[:, -1, :]
-        persistence_mse = mse(persistence_pred, next_observable).item()
-
-        train_mean_obs = train_t["next_observable"].mean(dim=0, keepdim=True)
-        mean_pred = train_mean_obs.expand_as(next_observable).to(device)
-        mean_mse = mse(mean_pred, next_observable).item()
-
-        # Per-feature breakdown, standardized units.
-        per_feature_model = ((pred - next_observable) ** 2).mean(dim=0)
-        per_feature_persist = ((persistence_pred - next_observable) ** 2).mean(dim=0)
-
-    from experiment.calendar_sim import OBSERVABLE_FEATURES
     per_feature = {
         name: {
             "model_mse": float(per_feature_model[j]),
@@ -169,19 +255,22 @@ def main(argv=None) -> int:
     }
 
     gate2 = {
-        "model_mse": model_mse,
-        "persistence_mse": persistence_mse,
-        "mean_mse": mean_mse,
+        "rollout_horizon_days": horizon,
+        "model_rollout_mse": model_mse,
+        "persistence_rollout_mse": persistence_mse,
+        "mean_rollout_mse": mean_mse,
         "model_beats_persistence": model_mse < persistence_mse,
         "model_beats_mean": model_mse < mean_mse,
+        "single_step_diagnostic_mse": single_step_mse,
         "per_feature": per_feature,
     }
-    print("\nGATE 2 -- next-step prediction (standardized MSE, test set):")
-    print(f"  model:       {model_mse:.5f}")
-    print(f"  persistence: {persistence_mse:.5f}")
-    print(f"  train mean:  {mean_mse:.5f}")
+    print(f"\nGATE 2 -- {horizon}-day closed-loop rollout prediction (standardized MSE, test set):")
+    print(f"  model:                {model_mse:.5f}")
+    print(f"  persistence (repeat): {persistence_mse:.5f}")
+    print(f"  train mean:           {mean_mse:.5f}")
+    print(f"  [diagnostic only, not trained against] single-step MSE: {single_step_mse:.5f}")
     verdict = gate2["model_beats_persistence"] and gate2["model_beats_mean"]
-    print(f"  model clearly beats both baselines: {verdict}")
+    print(f"  model clearly beats both rollout baselines: {verdict}")
 
     # ---- Save everything downstream steps need -----------------------------
     out = base / "world_model.pt"
@@ -191,6 +280,8 @@ def main(argv=None) -> int:
         "enc_hidden": ENC_HIDDEN, "latent_dim": LATENT_DIM, "dec_hidden": DEC_HIDDEN,
         "action_mean": action_mean, "action_std": action_std,
         "obs_mean": obs_mean, "obs_std": obs_std,
+        "rollout_horizon_days": horizon,
+        "kl_scheme": {"free_bits": FREE_BITS, "kl_weight": KL_WEIGHT, "warmup_epochs": KL_WARMUP_EPOCHS},
     }, out)
     print(f"\nwrote {out}")
 
@@ -202,6 +293,8 @@ def main(argv=None) -> int:
         "hyperparameters": {
             "latent_dim": LATENT_DIM, "enc_hidden": ENC_HIDDEN,
             "dec_hidden": DEC_HIDDEN, "kl_weight": KL_WEIGHT,
+            "free_bits": FREE_BITS, "kl_warmup_epochs": KL_WARMUP_EPOCHS,
+            "rollout_horizon_days": horizon,
             "batch_size": BATCH_SIZE, "lr": LR, "seed": SEED,
         },
     }, indent=2))

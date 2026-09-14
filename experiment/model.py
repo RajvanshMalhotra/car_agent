@@ -10,11 +10,24 @@ Decoder: a `GRUCell` that steps forward one calendar day at a time. At each
 step it takes the (fixed, abducted) latent `z`, the day's action
 (`ACTION_FEATURES` -- exogenous, supplied by whatever schedule is being asked
 about), and the previous day's observable vector, and predicts the next
-day's `OBSERVABLE_FEATURES`. Unrolled once, this is the Gate-2 next-step
-predictor; unrolled `K` times in closed loop (feeding its own predictions
-back in as `prev_obs`), this is the rollout the abduction test in
-`experiment/abduction.py` uses to answer "what would the next `K` days have
-looked like under a different action sequence".
+day's `OBSERVABLE_FEATURES`. Unrolled `K` times in closed loop (feeding its
+own predictions back in as `prev_obs`), this is the rollout used both for
+TRAINING (`experiment/train_world_model.py`) and for the abduction test in
+`experiment/abduction.py`.
+
+**Posterior collapse, and why training is multi-step.** An earlier version
+of this file trained only on SINGLE-step prediction, decoder conditioned on
+the TRUE previous-day observable. Tomorrow's daily-aggregate state is almost
+entirely determined by today's, so the decoder reached a very low
+single-step MSE with an EMPTY latent, and the KL penalty then drove
+`q(z|window)` to the prior (mu near 0, sigma near 1) -- a posterior collapse.
+`experiment/gate2b.py` is the check that catches this. The fix
+(`experiment/train_world_model.py`) is to train the SAME closed-loop
+`rollout()` this docstring describes: once `prev_obs` is the model's OWN
+drifting prediction rather than ground truth, single-step shortcuts stop
+being sufficient over a multi-day horizon and the latent has to carry
+something for the reconstruction loss to improve. See the experiment report
+for the full account of the collapse and the fix.
 
 Deliberately small (~11k parameters): the training set is a few thousand
 windows drawn from 64 scenarios, not the kind of corpus that justifies a
@@ -95,12 +108,32 @@ class WorldModel(nn.Module):
             prev_obs = obs_t
         return torch.stack(outputs, dim=1)
 
+    def encode_and_rollout(
+        self, actions: torch.Tensor, observables: torch.Tensor,
+        future_actions: torch.Tensor, sample: bool = True,
+    ):
+        """Encode the window, then CLOSED-LOOP roll out over `future_actions`.
+
+        This is the training-time call, and it is deliberately the exact
+        same `rollout()` path Step 3 evaluates -- see the module docstring
+        on why single-step training let the latent go empty. Returns
+        (predicted future observables [B, K, n_obs], mu, logvar).
+        """
+        mu, logvar = self.encode(actions, observables)
+        z = self.reparameterize(mu, logvar) if sample else mu
+        prev_obs0 = observables[:, -1, :]
+        predicted = self.rollout(z, future_actions, prev_obs0)
+        return predicted, mu, logvar
+
     def forward(
         self, actions: torch.Tensor, observables: torch.Tensor,
         next_action: torch.Tensor, sample: bool = True,
     ):
-        """One training step: encode the window, predict the SINGLE next day.
+        """SINGLE next-day prediction, for the Gate-2 diagnostic only.
 
+        Kept separate from training (see `encode_and_rollout`) because this
+        is exactly the objective that collapsed the posterior the first
+        time -- it is reported for comparison, never trained against.
         Returns (predicted next observable, mu, logvar).
         """
         mu, logvar = self.encode(actions, observables)
@@ -112,4 +145,30 @@ class WorldModel(nn.Module):
 
 
 def kl_to_standard_normal(mu: torch.Tensor, logvar: torch.Tensor) -> torch.Tensor:
+    """Plain KL(q(z|x) || N(0,I)), summed over dims, averaged over the batch.
+
+    Kept for reference/comparison -- see `kl_free_bits` below for what
+    training actually uses. Applying this WITHOUT a floor is exactly what
+    let the encoder drive every dimension's KL to ~0 last time: nothing
+    stops the optimizer from collapsing a dimension all the way once the
+    reconstruction loss no longer needs it.
+    """
     return -0.5 * torch.mean(torch.sum(1 + logvar - mu.pow(2) - logvar.exp(), dim=-1))
+
+
+def kl_free_bits(mu: torch.Tensor, logvar: torch.Tensor, free_bits: float = 0.15) -> torch.Tensor:
+    """Per-dimension KL, floored at `free_bits` nats (Kingma et al. 2016).
+
+    `torch.clamp(..., min=free_bits)` has zero gradient below the floor, so
+    once a dimension's raw KL drops to `free_bits` the optimizer has no
+    further incentive to push it toward the prior -- collapse to mu=0,
+    sigma=1 on that dimension becomes impossible regardless of how long
+    training runs or how large `KL_WEIGHT` is. Chosen over (or alongside) KL
+    annealing because it is a hard, permanent floor rather than a schedule
+    that could still let the model collapse after the anneal completes.
+    Summed over the latent dimensions (each contributing at least
+    `free_bits`), then averaged over the batch.
+    """
+    kl_per_dim = -0.5 * (1.0 + logvar - mu.pow(2) - logvar.exp())  # [B, D]
+    kl_floored = torch.clamp(kl_per_dim, min=free_bits)
+    return kl_floored.sum(dim=-1).mean()
