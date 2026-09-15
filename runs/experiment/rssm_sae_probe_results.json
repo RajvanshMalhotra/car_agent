@@ -1,0 +1,65 @@
+{
+  "latent_dim": 44,
+  "code_dim": 176,
+  "sparsity": {
+    "code_dim": 176,
+    "mean_active_features_per_example": 87.33866666666667,
+    "fraction_active": 0.49624242424242426,
+    "dead_features": 0
+  },
+  "probe": {
+    "crystal": {
+      "best_feature_index": 88,
+      "abs_pearson_r": 0.620457649230957,
+      "pearson_r": -0.620457649230957
+    },
+    "soc": {
+      "best_feature_index": 24,
+      "abs_pearson_r": 0.9455037713050842,
+      "pearson_r": -0.9455037713050842
+    },
+    "t_bat_mean_window_last_day": {
+      "best_feature_index": 140,
+      "abs_pearson_r": 0.9199337959289551,
+      "pearson_r": -0.9199337959289551
+    },
+    "corrosion_hours": {
+      "best_feature_index": 67,
+      "abs_pearson_r": 0.8360326886177063,
+      "pearson_r": 0.8360326886177063
+    }
+  },
+  "verdict": "The top crystal-tracking feature is NO BETTER than the top SoC-tracking feature: the SAE most likely surfaced an easily-encoded OBSERVABLE proxy, not evidence that the model represents the genuinely hidden, path-dependent crystal state.",
+  "history": [
+    {
+      "epoch": 0,
+      "recon_mse": 1.0895276069641113,
+      "l1": 0.22495242953300476
+    },
+    {
+      "epoch": 40,
+      "recon_mse": 0.13045084476470947,
+      "l1": 0.31199517846107483
+    },
+    {
+      "epoch": 80,
+      "recon_mse": 0.036906804889440536,
+      "l1": 0.33937084674835205
+    },
+    {
+      "epoch": 120,
+      "recon_mse": 0.019492316991090775,
+      "l1": 0.34914401173591614
+    },
+    {
+      "epoch": 160,
+      "recon_mse": 0.013446912169456482,
+      "l1": 0.35283535718917847
+    },
+    {
+      "epoch": 199,
+      "recon_mse": 0.010297444649040699,
+      "l1": 0.35519230365753174
+    }
+  ]
+}

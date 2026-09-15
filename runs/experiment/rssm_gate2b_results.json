@@ -1,0 +1,45 @@
+{
+  "part_a_posterior_not_prior": {
+    "n_examples": 1500,
+    "latent_dim": 8,
+    "mean_abs_mu": 2.7683897018432617,
+    "per_dim_std_mu": [
+      2.5322582721710205,
+      1.8765712976455688,
+      1.9084386825561523,
+      1.9956274032592773,
+      1.7009333372116089,
+      2.6799604892730713,
+      3.7390291690826416,
+      3.3296408653259277
+    ],
+    "per_dim_mean_sigma": [
+      0.07680722326040268,
+      0.09444968402385712,
+      0.1077345684170723,
+      0.13431204855442047,
+      0.10251330584287643,
+      0.09400589764118195,
+      0.11597960442304611,
+      0.08828220516443253
+    ],
+    "mean_sigma": 0.10176058858633041,
+    "mu_std_threshold": 0.1,
+    "sigma_threshold": 0.9,
+    "dims_with_std_mu_above_threshold": 8,
+    "dims_with_mean_sigma_below_threshold": 8,
+    "final_day_kl_posterior_vs_learned_prior": 2.5581820011138916,
+    "passed": true
+  },
+  "part_b_decoder_uses_latent": {
+    "n_examples": 1500,
+    "rollout_horizon_days": 30,
+    "true_latent_rollout_mse": 0.008211325854063034,
+    "zero_latent_rollout_mse": 0.39493054151535034,
+    "relative_degradation_from_zeroing": 47.09583111598663,
+    "min_relative_degradation_threshold": 0.15,
+    "passed": true
+  },
+  "passed": true,
+  "verdict": "GATE 2b PASSED: the posterior is measurably different from the prior and zeroing the latent measurably degrades rollout error -- the latent carries information and the decoder reads it. Safe to proceed to Step 3."
+}

@@ -1,0 +1,29 @@
+[200/1500] running means: factual=0.0083 counterfactual=0.0117 lastday=0.0612 interventional=1.1308
+[400/1500] running means: factual=0.0083 counterfactual=0.0128 lastday=0.0503 interventional=1.1350
+[600/1500] running means: factual=0.0079 counterfactual=0.0128 lastday=0.0541 interventional=1.1373
+[800/1500] running means: factual=0.0082 counterfactual=0.0130 lastday=0.0507 interventional=1.1496
+[1000/1500] running means: factual=0.0084 counterfactual=0.0132 lastday=0.0491 interventional=1.1378
+[1200/1500] running means: factual=0.0085 counterfactual=0.0133 lastday=0.0520 interventional=1.1238
+[1400/1500] running means: factual=0.0083 counterfactual=0.0133 lastday=0.0504 interventional=1.1267
+[1500/1500] running means: factual=0.0082 counterfactual=0.0132 lastday=0.0498 interventional=1.1273
+
+STEP 3 -- abduction test (four-way comparison):
+  n_examples:                1500
+  FACTUAL error:             0.00821
+  COUNTERFACTUAL abducted:   0.01316
+  COUNTERFACTUAL lastday:    0.04977   <-- the control that matters
+  INTERVENTIONAL zero:       1.12726
+  fraction of factual->lastday gap closed: 88.1%
+  fraction of factual->zero gap closed (weak control): 99.6%
+  win rate, abducted vs lastday: 1046/1500 (69.7%, p=0.0000 vs chance)
+
+  crystal-bin breakdown:
+    [0.0,0.2): n= 300  factual=0.0055  abducted=0.0114  lastday=0.0424  gap_closed=84.0%  win_rate=74.7%  p=0.0000
+    [0.2,0.4): n= 300  factual=0.0068  abducted=0.0127  lastday=0.0515  gap_closed=86.9%  win_rate=64.0%  p=0.0000
+    [0.4,0.6): n= 300  factual=0.0082  abducted=0.0147  lastday=0.0555  gap_closed=86.4%  win_rate=65.3%  p=0.0000
+    [0.6,0.8): n= 300  factual=0.0086  abducted=0.0123  lastday=0.0599  gap_closed=92.7%  win_rate=73.7%  p=0.0000
+    [0.8,1.0): n= 300  factual=0.0119  abducted=0.0147  lastday=0.0396  gap_closed=89.8%  win_rate=71.0%  p=0.0000
+
+  GENUINE PATH-DEPENDENT ABDUCTION: the win rate (69.7%, p=0.0000) is statistically significant, and no crystal bin significantly favors the last-day control -- the effect is real and not concentrated in a way that contradicts it elsewhere. The model is using information about the window's HISTORY that the final day alone does not contain.
+
+wrote runs/experiment/rssm_abduction_results.json

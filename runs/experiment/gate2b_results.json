@@ -28,6 +28,7 @@
     "sigma_threshold": 0.9,
     "dims_with_std_mu_above_threshold": 8,
     "dims_with_mean_sigma_below_threshold": 8,
+    "final_day_kl_posterior_vs_learned_prior": null,
     "passed": true
   },
   "part_b_decoder_uses_latent": {

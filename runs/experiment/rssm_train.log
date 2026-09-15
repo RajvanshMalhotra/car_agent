@@ -1,0 +1,21 @@
+RSSM parameters: 10914
+epoch   0  recon_window=0.7007  recon_factual=0.6912  recon_cf=0.9408  kl=1.3378  kl_weight=0.0010
+epoch  10  recon_window=0.0162  recon_factual=0.0210  recon_cf=0.0195  kl=2.9345  kl_weight=0.0100
+epoch  20  recon_window=0.0072  recon_factual=0.0095  recon_cf=0.0088  kl=2.4728  kl_weight=0.0100
+epoch  30  recon_window=0.0040  recon_factual=0.0046  recon_cf=0.0053  kl=2.3453  kl_weight=0.0100
+epoch  40  recon_window=0.0029  recon_factual=0.0031  recon_cf=0.0038  kl=2.3150  kl_weight=0.0100
+epoch  50  recon_window=0.0027  recon_factual=0.0028  recon_cf=0.0033  kl=2.3893  kl_weight=0.0100
+epoch  60  recon_window=0.0025  recon_factual=0.0028  recon_cf=0.0032  kl=2.3876  kl_weight=0.0100
+epoch  70  recon_window=0.0024  recon_factual=0.0029  recon_cf=0.0034  kl=2.4895  kl_weight=0.0100
+epoch  80  recon_window=0.0027  recon_factual=0.0028  recon_cf=0.0032  kl=2.6729  kl_weight=0.0100
+epoch  90  recon_window=0.0028  recon_factual=0.0040  recon_cf=0.0042  kl=2.9450  kl_weight=0.0100
+epoch  99  recon_window=0.0032  recon_factual=0.0056  recon_cf=0.0052  kl=3.4103  kl_weight=0.0100
+
+GATE 2 -- 30-day imagined rollout (standardized MSE, test set):
+  model:                0.00821
+  persistence (repeat): 0.76849
+  train mean:           1.01023
+  model clearly beats both rollout baselines: True
+
+wrote runs/experiment/rssm_world_model.pt
+wrote runs/experiment/rssm_gate2_results.json
