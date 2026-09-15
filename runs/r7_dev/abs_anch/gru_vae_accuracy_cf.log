@@ -1,0 +1,13 @@
+gru_vae cf (offsets=False, anchored=True), 2461 windows
+  tolerance accuracy: model 55.7%   baseline 60.5%
+    v_mean      model  48.1% (MAE 0.0860)   baseline  30.2%
+    v_min       model  20.6% (MAE 0.1554)   baseline  26.6%
+    v_max       model  45.0% (MAE 0.0986)   baseline  33.1%
+    i_mean      model  70.0% (MAE 0.5493)   baseline  78.7%
+    i_mean_abs  model  70.3% (MAE 0.5456)   baseline  78.3%
+    t_bat_mean  model  94.5% (MAE 0.4104)   baseline  85.5%
+    t_bat_max   model  88.6% (MAE 0.4936)   baseline  81.5%
+    t_bay_mean  model  54.0% (MAE 1.0241)   baseline  86.5%
+    t_bay_max   model  44.1% (MAE 1.1030)   baseline  86.5%
+    soc         model  22.1% (MAE 0.1014)   baseline  18.1%
+wrote runs/r7_dev/abs_anch/accuracy_cf.json

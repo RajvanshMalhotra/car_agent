@@ -1,0 +1,13 @@
+rssm cf (offsets=False, anchored=False), 2461 windows
+  tolerance accuracy: model 21.0%   baseline 60.5%
+    v_mean      model  54.2% (MAE 0.0537)   baseline  30.2%
+    v_min       model  11.1% (MAE 0.2115)   baseline  26.6%
+    v_max       model  12.6% (MAE 0.1581)   baseline  33.1%
+    i_mean      model  57.8% (MAE 0.6113)   baseline  78.7%
+    i_mean_abs  model  32.5% (MAE 0.6519)   baseline  78.3%
+    t_bat_mean  model   0.0% (MAE 5.4807)   baseline  85.5%
+    t_bat_max   model   0.0% (MAE 6.2292)   baseline  81.5%
+    t_bay_mean  model   0.0% (MAE 6.5363)   baseline  86.5%
+    t_bay_max   model  12.4% (MAE 5.2808)   baseline  86.5%
+    soc         model  29.7% (MAE 0.0493)   baseline  18.1%
+wrote runs/r7_dev/abs_plain/rssm_accuracy_cf.json

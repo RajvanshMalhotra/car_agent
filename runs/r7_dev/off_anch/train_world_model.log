@@ -1,0 +1,34 @@
+          val_rollout=0.1807  best so far: epoch 0
+epoch   0  recon_factual=0.4010  recon_cf=0.4926  kl_free_bits=1.3291  kl_weight=0.0010
+          val_rollout=0.0529  best so far: epoch 10
+epoch  10  recon_factual=0.0975  recon_cf=0.1058  kl_free_bits=2.4953  kl_weight=0.0100
+          val_rollout=0.0336  best so far: epoch 20
+epoch  20  recon_factual=0.0533  recon_cf=0.0512  kl_free_bits=2.7801  kl_weight=0.0100
+          val_rollout=0.0295  best so far: epoch 30
+epoch  30  recon_factual=0.0407  recon_cf=0.0353  kl_free_bits=2.6690  kl_weight=0.0100
+          val_rollout=0.0280  best so far: epoch 40
+epoch  40  recon_factual=0.0355  recon_cf=0.0283  kl_free_bits=2.5411  kl_weight=0.0100
+          val_rollout=0.0275  best so far: epoch 47
+epoch  50  recon_factual=0.0324  recon_cf=0.0238  kl_free_bits=2.4489  kl_weight=0.0100
+          val_rollout=0.0265  best so far: epoch 58
+epoch  60  recon_factual=0.0306  recon_cf=0.0205  kl_free_bits=2.3678  kl_weight=0.0100
+          val_rollout=0.0262  best so far: epoch 65
+epoch  70  recon_factual=0.0298  recon_cf=0.0187  kl_free_bits=2.3389  kl_weight=0.0100
+          val_rollout=0.0260  best so far: epoch 75
+epoch  80  recon_factual=0.0289  recon_cf=0.0175  kl_free_bits=2.2060  kl_weight=0.0100
+          val_rollout=0.0256  best so far: epoch 90
+epoch  90  recon_factual=0.0288  recon_cf=0.0168  kl_free_bits=2.1974  kl_weight=0.0100
+          val_rollout=0.0257  best so far: epoch 90
+epoch  99  recon_factual=0.0284  recon_cf=0.0159  kl_free_bits=2.1889  kl_weight=0.0100
+
+restored best epoch 90 (val rollout MSE 0.02557)
+
+GATE 2 -- 30-day closed-loop rollout prediction (standardized MSE, test set):
+  model:                0.08903
+  persistence (repeat): 1.29987
+  train mean:           1.14381
+  [diagnostic only, not trained against] single-step MSE: 1.23668
+  model clearly beats both rollout baselines: True
+
+wrote runs/r7_dev/off_anch/world_model.pt
+wrote runs/r7_dev/off_anch/gate2_results.json

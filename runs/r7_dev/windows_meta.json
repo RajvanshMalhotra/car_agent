@@ -1,0 +1,110 @@
+{
+  "window_len": 60,
+  "rollout_k": 30,
+  "action_features": [
+    "is_layup",
+    "driving_minutes",
+    "soak_hours",
+    "ambient_c"
+  ],
+  "observable_features": [
+    "v_mean",
+    "v_min",
+    "v_max",
+    "i_mean",
+    "i_mean_abs",
+    "t_bat_mean",
+    "t_bat_max",
+    "t_bay_mean",
+    "t_bay_max",
+    "soc"
+  ],
+  "train_scenarios": [
+    "amb-10_s0001",
+    "amb-10_s0002",
+    "amb-10_s0003",
+    "amb-10_s0004",
+    "amb-10_s0005",
+    "amb-10_s0006",
+    "amb-10_s0007",
+    "amb-10_s0008",
+    "amb-10_s0009",
+    "amb-10_s0011",
+    "amb-10_s0013",
+    "amb-10_s0014",
+    "amb-10_s0015",
+    "amb-10_s0017",
+    "amb-10_s0018",
+    "amb-10_s0019",
+    "amb10_s0020",
+    "amb10_s0021",
+    "amb10_s0022",
+    "amb10_s0023",
+    "amb10_s0024",
+    "amb10_s0025",
+    "amb10_s0026",
+    "amb10_s0027",
+    "amb10_s0028",
+    "amb10_s0029",
+    "amb10_s0031",
+    "amb10_s0032",
+    "amb10_s0033",
+    "amb10_s0034",
+    "amb10_s0035",
+    "amb10_s0036",
+    "amb10_s0037",
+    "amb10_s0038",
+    "amb10_s0039"
+  ],
+  "val_scenarios": [
+    "amb-10_s0000",
+    "amb-10_s0010",
+    "amb-10_s0012",
+    "amb-10_s0016",
+    "amb10_s0030"
+  ],
+  "test_scenarios": [
+    "amb25_s0040",
+    "amb25_s0041",
+    "amb25_s0042",
+    "amb25_s0043",
+    "amb25_s0044",
+    "amb25_s0045",
+    "amb25_s0046",
+    "amb25_s0047",
+    "amb25_s0048",
+    "amb25_s0049",
+    "amb25_s0050",
+    "amb25_s0051",
+    "amb25_s0052",
+    "amb25_s0053",
+    "amb25_s0054",
+    "amb25_s0055",
+    "amb25_s0056",
+    "amb25_s0057",
+    "amb25_s0058",
+    "amb25_s0059"
+  ],
+  "holdout_ambient": 42.0,
+  "split_seed": 7,
+  "counts": {
+    "train": {
+      "n_windows": 4017,
+      "n_scenarios": 35
+    },
+    "val": {
+      "n_windows": 522,
+      "n_scenarios": 5
+    },
+    "test": {
+      "n_windows": 2461,
+      "n_scenarios": 20
+    }
+  },
+  "dev_split_of": "runs/experiment_hot_noisy",
+  "train_ambients": [
+    -10.0,
+    10.0
+  ],
+  "unseen_ambient": 25.0
+}
