@@ -1,0 +1,65 @@
+{
+  "latent_dim": 8,
+  "code_dim": 32,
+  "sparsity": {
+    "code_dim": 32,
+    "mean_active_features_per_example": 16.354666666666667,
+    "fraction_active": 0.5110833333333333,
+    "dead_features": 0
+  },
+  "probe": {
+    "crystal": {
+      "best_feature_index": 18,
+      "abs_pearson_r": 0.6278975605964661,
+      "pearson_r": 0.6278975605964661
+    },
+    "soc": {
+      "best_feature_index": 24,
+      "abs_pearson_r": 0.5404881238937378,
+      "pearson_r": -0.5404881238937378
+    },
+    "t_bat_mean_window_last_day": {
+      "best_feature_index": 22,
+      "abs_pearson_r": 0.7039462924003601,
+      "pearson_r": 0.7039462924003601
+    },
+    "corrosion_hours": {
+      "best_feature_index": 26,
+      "abs_pearson_r": 0.17136894166469574,
+      "pearson_r": 0.17136894166469574
+    }
+  },
+  "verdict": "The top crystal-tracking feature CLEARLY beats the top SoC-tracking feature: some sparse feature captured something about the hidden state beyond what SoC alone would give away.",
+  "history": [
+    {
+      "epoch": 0,
+      "recon_mse": 1.109218716621399,
+      "l1": 0.19893194735050201
+    },
+    {
+      "epoch": 40,
+      "recon_mse": 0.6308562755584717,
+      "l1": 0.22130747139453888
+    },
+    {
+      "epoch": 80,
+      "recon_mse": 0.15603648126125336,
+      "l1": 0.3198328912258148
+    },
+    {
+      "epoch": 120,
+      "recon_mse": 0.06799736618995667,
+      "l1": 0.3624308407306671
+    },
+    {
+      "epoch": 160,
+      "recon_mse": 0.05243891477584839,
+      "l1": 0.3664495348930359
+    },
+    {
+      "epoch": 199,
+      "recon_mse": 0.04360491782426834,
+      "l1": 0.36934563517570496
+    }
+  ]
+}
