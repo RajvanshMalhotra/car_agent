@@ -43,7 +43,7 @@ import torch
 from torch import nn
 
 from experiment.calendar_sim import OBSERVABLE_FEATURES
-from experiment.checkpoints import artifact, model_config
+from experiment.checkpoints import BestCheckpoint, artifact, model_config, validation_rollout_mse
 from experiment.data import load_daily_trajectory
 from experiment.rssm import RSSM, balanced_kl
 from experiment.train_world_model import (
@@ -114,6 +114,19 @@ def main(argv=None) -> int:
         "future_observables": tensor(test_fo, obs_mean, obs_std),
     }
 
+    # Round 6: with a validation split present, keep the best epoch, not the last.
+    va = None
+    if (base / "windows_val.npz").exists():
+        val = load_split(base, "val")
+        val_fa, val_fo = build_future_arrays(val, scenarios, horizon)
+        va = {
+            "actions": tensor(val["actions"], action_mean, action_std),
+            "observables": tensor(val["observables"], obs_mean, obs_std),
+            "future_actions": tensor(val_fa, action_mean, action_std),
+            "future_observables": tensor(val_fo, obs_mean, obs_std),
+        }
+    best = BestCheckpoint()
+
     device = torch.device(args.device)
     model = RSSM(
         n_action=train["actions"].shape[-1], n_obs=train["observables"].shape[-1],
@@ -161,11 +174,20 @@ def main(argv=None) -> int:
             sums["kl"] += kl.item()
             n_batches += 1
         row = {"epoch": epoch, "kl_weight": kl_weight_t, **{k: v / n_batches for k, v in sums.items()}}
+        if va is not None:
+            row["val_rollout_mse"] = validation_rollout_mse(model, va, device)
+            best.update(epoch, row["val_rollout_mse"], model)
         history.append(row)
         if epoch % 10 == 0 or epoch == args.epochs - 1:
             print(f"epoch {epoch:3d}  recon_window={row['recon_window']:.4f}  "
                   f"recon_factual={row['recon_factual']:.4f}  recon_cf={row['recon_cf']:.4f}  "
-                  f"kl={row['kl']:.4f}  kl_weight={kl_weight_t:.4f}", flush=True)
+                  f"kl={row['kl']:.4f}  kl_weight={kl_weight_t:.4f}"
+                  + (f"  val_rollout={row['val_rollout_mse']:.4f} (best epoch {best.best_epoch})"
+                     if va is not None else ""), flush=True)
+
+    if va is not None:
+        best.restore(model)
+        print(f"\nrestored best epoch {best.best_epoch} (val rollout MSE {best.best_loss:.5f})")
 
     # ---- Gate 2: identical comparison to train_world_model.py ------------
     model.eval()
@@ -218,7 +240,8 @@ def main(argv=None) -> int:
 
     results_path = base / artifact("rssm", "gate2_results.json")
     results_path.write_text(json.dumps({
-        "gate2": gate2, "model_params": n_params, "epochs": args.epochs, "history": history,
+        "gate2": gate2, "model_params": n_params, "epochs": args.epochs,
+        "best_epoch": best.best_epoch, "history": history,
         "hyperparameters": {
             "deter": DETER, "stoch": STOCH, "hidden": HIDDEN, "kl_weight": KL_WEIGHT,
             "free_bits_per_day": FREE_BITS_PER_DAY, "kl_balance": KL_BALANCE,

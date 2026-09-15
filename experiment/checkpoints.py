@@ -57,6 +57,45 @@ def build_model(checkpoint: dict) -> nn.Module:
     return model.eval()
 
 
+class BestCheckpoint:
+    """Keeps the weights from the epoch with the lowest validation loss.
+
+    Round 5's RSSM went unstable late and its LAST epoch was evaluated. Both
+    training scripts now select by validation loss instead, under one rule.
+    """
+
+    def __init__(self) -> None:
+        self.best_epoch: int | None = None
+        self.best_loss = float("inf")
+        self._state: dict | None = None
+
+    def update(self, epoch: int, loss: float, model: nn.Module) -> bool:
+        if loss >= self.best_loss:
+            return False
+        self.best_epoch, self.best_loss = epoch, loss
+        self._state = {k: v.detach().clone() for k, v in model.state_dict().items()}
+        return True
+
+    def restore(self, model: nn.Module) -> None:
+        if self._state is not None:
+            model.load_state_dict(self._state)
+
+
+def validation_rollout_mse(model: nn.Module, split: dict, device) -> float:
+    """Posterior-mean abduction, deterministic 30-day rollout, factual continuation.
+
+    Same quantity as Gate 2's model error, on the validation batteries.
+    Leaves the model in eval mode; both training loops call `model.train()`
+    at the start of every epoch.
+    """
+    model.eval()
+    with torch.no_grad():
+        observables = split["observables"].to(device)
+        state = model.abduct(split["actions"].to(device), observables)
+        pred = model.rollout(state, split["future_actions"].to(device), observables[:, -1, :])
+        return float(((pred - split["future_observables"].to(device)) ** 2).mean())
+
+
 def load_model(base: Path, arch: str) -> tuple[nn.Module, dict]:
     # weights_only=False: the checkpoint carries numpy normalization arrays
     # alongside the state_dict, and it is always our own file written by a

@@ -80,6 +80,7 @@ import torch
 from torch import nn
 
 from experiment.calendar_sim import ACTION_FEATURES, OBSERVABLE_FEATURES
+from experiment.checkpoints import BestCheckpoint, validation_rollout_mse
 from experiment.data import load_daily_trajectory
 from experiment.model import WorldModel, kl_free_bits
 
@@ -202,6 +203,13 @@ def main(argv=None) -> int:
 
     train_t = prep(train, train_future_actions, train_future_obs)
     test_t = prep(test, test_future_actions, test_future_obs)
+
+    # Round 6: with a validation split present, keep the best epoch, not the last.
+    val_t = None
+    if (base / "windows_val.npz").exists():
+        val = load_split(base, "val")
+        val_t = prep(val, *build_future_arrays(val, scenarios, horizon))
+    best = BestCheckpoint()
     train_t["cf_actions"] = torch.tensor(
         _apply(train_cf["cf_actions"], action_mean, action_std), dtype=torch.float32,
     )
@@ -268,11 +276,21 @@ def main(argv=None) -> int:
             "recon_mse_counterfactual": epoch_recon_cf / n_batches,
             "kl_free_bits": epoch_kl / n_batches, "kl_weight": kl_weight_t,
         })
+        if val_t is not None:
+            history[-1]["val_rollout_mse"] = validation_rollout_mse(model, val_t, device)
+            best.update(epoch, history[-1]["val_rollout_mse"], model)
         if epoch % 10 == 0 or epoch == args.epochs - 1:
+            if val_t is not None:
+                print(f"          val_rollout={history[-1]['val_rollout_mse']:.4f}  "
+                      f"best so far: epoch {best.best_epoch}", flush=True)
             print(f"epoch {epoch:3d}  recon_factual={history[-1]['recon_mse_factual']:.4f}  "
                   f"recon_cf={history[-1]['recon_mse_counterfactual']:.4f}  "
                   f"kl_free_bits={history[-1]['kl_free_bits']:.4f}  "
                   f"kl_weight={kl_weight_t:.4f}", flush=True)
+
+    if val_t is not None:
+        best.restore(model)
+        print(f"\nrestored best epoch {best.best_epoch} (val rollout MSE {best.best_loss:.5f})")
 
     # ---- Gate 2: multi-step rollout error vs persistence and mean ---------
     model.eval()
@@ -351,6 +369,7 @@ def main(argv=None) -> int:
         "gate2": gate2,
         "model_params": n_params,
         "epochs": args.epochs,
+        "best_epoch": best.best_epoch,
         "history": history,
         "hyperparameters": {
             "latent_dim": LATENT_DIM, "enc_hidden": ENC_HIDDEN,

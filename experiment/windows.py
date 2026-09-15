@@ -57,10 +57,14 @@ N_BINS = 10
 #: Sampling ceilings, not guarantees -- a bin with fewer candidates than this
 #: contributes everything it has. See Gate 1's printed histogram for the
 #: actual counts.
-TARGET_PER_SPLIT = {"train": 6000, "test": 1500}
+TARGET_PER_SPLIT = {"train": 6000, "val": 1000, "test": 1500}
 
 SPLIT_SEED = 7
 TRAIN_FRACTION = 0.8
+
+#: Share of the NON-held-out batteries kept back for best-epoch selection
+#: when a climate is held out (round 6). Split by battery, like test.
+VAL_FRACTION = 0.15
 
 
 def scenario_split(
@@ -72,6 +76,27 @@ def scenario_split(
     rng.shuffle(names)
     n_train = int(round(len(names) * train_fraction))
     return set(names[:n_train]), set(names[n_train:])
+
+
+def holdout_split(
+    scenario_names: list[str], ambient_by_scenario: dict[str, float],
+    holdout_ambient: float, val_fraction: float = VAL_FRACTION, seed: int = SPLIT_SEED,
+) -> tuple[set[str], set[str], set[str]]:
+    """(train, val, test) with every battery at `holdout_ambient` in test only.
+
+    Round 6's generalization test: the models never see the held-out climate,
+    so test is a genuinely new condition rather than an interpolation between
+    batteries drawn from the same four climates. Validation comes from the
+    remaining climates, by battery, so choosing the best epoch never looks at
+    the held-out one.
+    """
+    test = {n for n in scenario_names if ambient_by_scenario[n] == holdout_ambient}
+    if not test:
+        raise ValueError(f"no scenario has ambient {holdout_ambient}")
+    rest = sorted(set(scenario_names) - test)
+    random.Random(seed).shuffle(rest)
+    n_val = int(round(len(rest) * val_fraction))
+    return set(rest[n_val:]), set(rest[:n_val]), test
 
 
 def _candidates(
@@ -162,19 +187,25 @@ def histogram(values: np.ndarray, n_bins: int = N_BINS) -> dict[str, int]:
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dataset-dir", default="runs/experiment")
+    parser.add_argument("--holdout-ambient", type=float, default=None,
+                        help="test on every battery at this ambient, train/val on the rest")
     args = parser.parse_args(argv)
     base = Path(args.dataset_dir)
 
     scenarios, order = load_daily_trajectory(base / "daily_trajectory.csv")
-    train_names, test_names = scenario_split(order)
+    if args.holdout_ambient is None:
+        train_names, test_names = scenario_split(order)
+        splits = {"train": train_names, "test": test_names}
+    else:
+        ambient = {n: float(scenarios[n]["ambient_c"][0]) for n in order}
+        train_names, val_names, test_names = holdout_split(order, ambient, args.holdout_ambient)
+        splits = {"train": train_names, "val": val_names, "test": test_names}
 
     rng = random.Random(SPLIT_SEED)
     counts = {}
     hist = {}
-    for split, names, desired in (
-        ("train", train_names, TARGET_PER_SPLIT["train"]),
-        ("test", test_names, TARGET_PER_SPLIT["test"]),
-    ):
+    for split, names in splits.items():
+        desired = TARGET_PER_SPLIT[split]
         candidates = _candidates(scenarios, names)
         chosen = _stratified_sample(candidates, desired, rng)
         data = _extract(scenarios, chosen)
@@ -194,7 +225,9 @@ def main(argv=None) -> int:
         "action_features": list(ACTION_FEATURES),
         "observable_features": list(OBSERVABLE_FEATURES),
         "train_scenarios": sorted(train_names),
+        **({"val_scenarios": sorted(splits["val"])} if "val" in splits else {}),
         "test_scenarios": sorted(test_names),
+        "holdout_ambient": args.holdout_ambient,
         "split_seed": SPLIT_SEED,
         "counts": counts,
         "target_crystal_histogram": hist,
@@ -202,7 +235,7 @@ def main(argv=None) -> int:
 
     max_frac = 0.0
     print("\nGATE 1 -- crystal target histogram (10 bins):")
-    for split in ("train", "test"):
+    for split in splits:
         print(f"  {split}:")
         n = counts[split]["n_windows"]
         for label, count in hist[split].items():

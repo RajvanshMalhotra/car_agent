@@ -40,3 +40,22 @@ def load_daily_trajectory(path: Path) -> tuple[dict[str, dict[str, np.ndarray]],
         for name, cols in buffers.items()
     }
     return scenarios, order
+
+
+def write_daily_trajectory(
+    path: Path, scenarios: dict[str, dict[str, np.ndarray]], order: list[str],
+) -> None:
+    """Inverse of `load_daily_trajectory`: one row per scenario per day, in `order`.
+
+    Values are written with `repr`, which round-trips a float64 exactly, so a
+    variant dataset (e.g. `experiment/make_noisy_variant.py`) differs from its
+    source only where it was deliberately changed.
+    """
+    columns = list(scenarios[order[0]])
+    with open(path, "w", newline="") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(["scenario", *columns])
+        for name in order:
+            arr = scenarios[name]
+            for day in range(len(arr[columns[0]])):
+                writer.writerow([name, *(repr(float(arr[c][day])) for c in columns)])
