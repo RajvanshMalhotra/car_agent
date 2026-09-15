@@ -33,6 +33,7 @@ def model_config(model: nn.Module) -> dict:
             "arch": "rssm", "n_action": model.n_action, "n_obs": model.n_obs,
             "deter": model.deter, "stoch": model.stoch, "hidden": model.hidden,
             "anchored": model.anchored,
+            "decoder_layers": model.decoder_layers, "anchor_skip": model.anchor_skip,
         }
     return {
         "arch": "gru_vae", "n_action": model.n_action, "n_obs": model.n_obs,
@@ -48,6 +49,8 @@ def build_model(checkpoint: dict) -> nn.Module:
             n_action=checkpoint["n_action"], n_obs=checkpoint["n_obs"],
             deter=checkpoint["deter"], stoch=checkpoint["stoch"], hidden=checkpoint["hidden"],
             anchored=checkpoint.get("anchored", False),
+            decoder_layers=checkpoint.get("decoder_layers", 1),
+            anchor_skip=checkpoint.get("anchor_skip", False),
         )
     else:
         model = WorldModel(

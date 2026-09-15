@@ -78,8 +78,17 @@ class RSSM(nn.Module):
     def __init__(
         self, n_action: int, n_obs: int, deter: int = 36, stoch: int = 8,
         hidden: int = 32, anchored: bool = False,
+        decoder_layers: int = 1, anchor_skip: bool = False,
     ) -> None:
         super().__init__()
+        if anchor_skip and not anchored:
+            raise ValueError("anchor_skip injects the anchor, so it requires anchored=True")
+        if decoder_layers < 1:
+            raise ValueError("decoder_layers must be at least 1")
+        #: Round 8: decoder depth, and residual skips projecting the anchor into
+        #: every hidden layer. The defaults are the round 5-7 decoder exactly.
+        self.decoder_layers = decoder_layers
+        self.anchor_skip = anchor_skip
         self.n_action = n_action
         self.n_obs = n_obs
         self.deter = deter
@@ -92,11 +101,46 @@ class RSSM(nn.Module):
         self.cell = nn.GRUCell(stoch + n_action, deter)
         self.prior_head = _mlp(deter, hidden, 2 * stoch)
         self.post_head = _mlp(deter + n_obs, hidden, 2 * stoch)
-        self.decoder = _mlp(deter + stoch, hidden, n_obs)
+        if decoder_layers == 1 and not anchor_skip:
+            # Round 5-7 decoder, same parameter names, so their checkpoints load unchanged.
+            self.decoder = _mlp(deter + stoch, hidden, n_obs)
+        else:
+            self.dec_layers = nn.ModuleList(
+                nn.Linear(deter + stoch if l == 0 else hidden, hidden) for l in range(decoder_layers)
+            )
+            if anchor_skip:
+                self.dec_skips = nn.ModuleList(nn.Linear(n_obs, hidden) for _ in range(decoder_layers))
+            self.dec_head = nn.Linear(hidden, n_obs)
         if anchored:
             # Start exactly at the anchor baseline; training can only add a correction.
-            nn.init.zeros_(self.decoder[-1].weight)
-            nn.init.zeros_(self.decoder[-1].bias)
+            nn.init.zeros_(self.decoder_head.weight)
+            nn.init.zeros_(self.decoder_head.bias)
+
+    @property
+    def decoder_head(self) -> nn.Linear:
+        """The final projection to observables, whichever decoder layout is in use."""
+        return self.decoder[-1] if hasattr(self, "decoder") else self.dec_head
+
+    def _decode(self, h: torch.Tensor, s: torch.Tensor, anchor: torch.Tensor | None) -> torch.Tensor:
+        """One day's observables from `[h, s]`; `anchor + correction` when anchored.
+
+        With `anchor_skip`, every hidden layer also receives a linear projection
+        of the anchor -- `x_l = ELU(W_l x_{l-1} + P_l anchor)` -- so the
+        correction can depend on the value it corrects.
+        """
+        x = torch.cat([h, s], dim=-1)
+        if hasattr(self, "decoder"):
+            out = self.decoder(x)
+        else:
+            if self.anchor_skip and anchor is None:
+                raise ValueError("an anchor_skip decoder needs anchors")
+            for l, layer in enumerate(self.dec_layers):
+                z = layer(x)
+                if self.anchor_skip:
+                    z = z + self.dec_skips[l](anchor)
+                x = nn.functional.elu(z)
+            out = self.dec_head(x)
+        return out if anchor is None else anchor + out
 
     @staticmethod
     def _split(stats: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
@@ -137,14 +181,16 @@ class RSSM(nn.Module):
             prior_logvar.append(p_logvar)
             post_mu.append(q_mu)
             post_logvar.append(q_logvar)
-            decoded = self.decoder(torch.cat([h, s], dim=-1))
-            recon.append(decoded if anchors is None else anchors[:, t, :] + decoded)
+            if not (self.anchor_skip and anchors is None):
+                # Abduction filters without anchors; the belief never depends on the
+                # reconstruction, so a skip decoder simply has none to produce.
+                recon.append(self._decode(h, s, None if anchors is None else anchors[:, t, :]))
         return {
             "prior_mu": torch.stack(prior_mu, dim=1),
             "prior_logvar": torch.stack(prior_logvar, dim=1),
             "post_mu": torch.stack(post_mu, dim=1),
             "post_logvar": torch.stack(post_logvar, dim=1),
-            "recon": torch.stack(recon, dim=1),
+            "recon": torch.stack(recon, dim=1) if recon else None,
             "state": torch.cat([h, s], dim=-1),
         }
 
@@ -174,8 +220,7 @@ class RSSM(nn.Module):
             h = self.cell(torch.cat([s, action_seq[:, t, :]], dim=-1), h)
             mu, logvar = self._split(self.prior_head(h))
             s = self._draw(mu, logvar, sample)
-            decoded = self.decoder(torch.cat([h, s], dim=-1))
-            outputs.append(decoded if anchors is None else anchors[:, t, :] + decoded)
+            outputs.append(self._decode(h, s, None if anchors is None else anchors[:, t, :]))
         return torch.stack(outputs, dim=1)
 
     def sample_rollouts(

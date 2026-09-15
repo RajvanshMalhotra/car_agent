@@ -79,6 +79,10 @@ def main(argv=None) -> int:
                         help="round 7: temperatures as offset above ambient")
     parser.add_argument("--anchored", action="store_true",
                         help="round 7: decode a correction to the same-day-type anchor")
+    parser.add_argument("--decoder-layers", type=int, default=1,
+                        help="round 8: hidden layers in the decoder (1 = rounds 5-7)")
+    parser.add_argument("--anchor-skip", action="store_true",
+                        help="round 8: project the anchor into every decoder hidden layer")
     args = parser.parse_args(argv)
     base = Path(args.dataset_dir)
 
@@ -118,6 +122,7 @@ def main(argv=None) -> int:
     model = RSSM(
         n_action=train["actions"].shape[-1], n_obs=train["observables"].shape[-1],
         deter=DETER, stoch=STOCH, hidden=HIDDEN, anchored=args.anchored,
+        decoder_layers=args.decoder_layers, anchor_skip=args.anchor_skip,
     ).to(device)
     n_params = sum(p.numel() for p in model.parameters())
     print(f"RSSM parameters: {n_params}", flush=True)
@@ -240,6 +245,7 @@ def main(argv=None) -> int:
             "cf_loss_weight": CF_LOSS_WEIGHT, "batch_size": BATCH_SIZE, "lr": LR,
             "grad_clip": GRAD_CLIP, "seed": SEED,
             "offsets": args.offsets, "anchored": args.anchored,
+            "decoder_layers": args.decoder_layers, "anchor_skip": args.anchor_skip,
         },
     }, indent=2))
     print(f"wrote {results_path}")
