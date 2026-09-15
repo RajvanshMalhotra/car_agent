@@ -61,6 +61,21 @@ PARASITIC_A_RANGE = (0.02, 0.10)
 TRIPS_PER_DAY = 2.0
 SOAK_H = 8.0
 
+def draw_scenario_params(rng: random.Random) -> dict[str, float]:
+    """One scenario's sampled axes, in the fixed draw order the dataset depends on.
+
+    Shared with `experiment/add_ambient.py`, which replays these draws to
+    append scenarios for a new climate without disturbing existing ones --
+    so the ORDER of the four uniforms here must never change.
+    """
+    return {
+        "trip_minutes": rng.uniform(*TRIP_MINUTES_RANGE),
+        "layup_days": rng.uniform(*LAYUP_DAYS_RANGE),
+        "layup_gap_days": rng.uniform(*LAYUP_GAP_DAYS_RANGE),
+        "parasitic_a": rng.uniform(*PARASITIC_A_RANGE),
+    }
+
+
 DAY_COLUMNS = (
     ("scenario", "day")
     + ACTION_FEATURES
@@ -92,10 +107,11 @@ def main(argv=None) -> int:
 
     for ambient_c in AMBIENTS_C:
         for _ in range(args.scenarios_per_ambient):
-            trip_minutes = rng.uniform(*TRIP_MINUTES_RANGE)
-            layup_days = rng.uniform(*LAYUP_DAYS_RANGE)
-            layup_gap_days = rng.uniform(*LAYUP_GAP_DAYS_RANGE)
-            parasitic_a = rng.uniform(*PARASITIC_A_RANGE)
+            params = draw_scenario_params(rng)
+            trip_minutes = params["trip_minutes"]
+            layup_days = params["layup_days"]
+            layup_gap_days = params["layup_gap_days"]
+            parasitic_a = params["parasitic_a"]
             name = f"amb{ambient_c:g}_s{index:04d}"
 
             t0 = time.time()
