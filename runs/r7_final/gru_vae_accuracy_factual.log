@@ -1,0 +1,13 @@
+gru_vae factual (offsets=False, anchored=True), 1500 windows
+  tolerance accuracy: model 65.8%   baseline 83.3%
+    v_mean      model  76.5% (MAE 0.0382)   baseline  77.5%
+    v_min       model  18.6% (MAE 0.1716)   baseline  66.1%
+    v_max       model  39.9% (MAE 0.0739)   baseline  83.2%
+    i_mean      model  73.9% (MAE 0.4367)   baseline  81.2%
+    i_mean_abs  model  65.8% (MAE 0.4942)   baseline  81.3%
+    t_bat_mean  model  94.6% (MAE 0.4094)   baseline  92.4%
+    t_bat_max   model  92.0% (MAE 0.4602)   baseline  90.1%
+    t_bay_mean  model  78.9% (MAE 0.6880)   baseline  95.7%
+    t_bay_max   model  57.9% (MAE 1.0856)   baseline  95.7%
+    soc         model  59.4% (MAE 0.0294)   baseline  70.4%
+wrote runs/r7_final/accuracy_factual.json
