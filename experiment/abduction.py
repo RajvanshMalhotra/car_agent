@@ -106,26 +106,10 @@ from experiment.calendar_sim import (
     truncate_driving,
 )
 from experiment.data import load_daily_trajectory
-from experiment.model import WorldModel
 from sweep_dataset import load_driving
 
 ACTION_IDX = {name: i for i, name in enumerate(ACTION_FEATURES)}
 OBS_IDX = {name: i for i, name in enumerate(OBSERVABLE_FEATURES)}
-
-
-def load_model(base: Path) -> tuple[WorldModel, dict]:
-    # weights_only=False: this checkpoint carries numpy normalization arrays
-    # alongside the state_dict, and it is always our own file written by
-    # experiment/train_world_model.py in this same run -- never untrusted.
-    checkpoint = torch.load(base / "world_model.pt", map_location="cpu", weights_only=False)
-    model = WorldModel(
-        n_action=checkpoint["n_action"], n_obs=checkpoint["n_obs"],
-        enc_hidden=checkpoint["enc_hidden"], latent_dim=checkpoint["latent_dim"],
-        dec_hidden=checkpoint["dec_hidden"],
-    )
-    model.load_state_dict(checkpoint["state_dict"])
-    model.eval()
-    return model, checkpoint
 
 
 def _normal_day_action(arr: dict, feature: str) -> float:
@@ -274,10 +258,14 @@ def main(argv=None) -> int:
     parser.add_argument("--trajectory", default="runs/telemetry.csv")
     parser.add_argument("--max-examples", type=int, default=0,
                         help="0 = use every window in windows_test.npz")
+    parser.add_argument("--arch", choices=("gru_vae", "rssm"), default="gru_vae")
     args = parser.parse_args(argv)
     base = Path(args.dataset_dir)
 
-    model, checkpoint = load_model(base)
+    # Imported here, not at module level: checkpoints imports this package's
+    # models, and gate2b/sae_probe import helpers from this module.
+    from experiment.checkpoints import artifact, load_model
+    model, checkpoint = load_model(base, args.arch)
     action_mean, action_std = checkpoint["action_mean"], checkpoint["action_std"]
     obs_mean, obs_std = checkpoint["obs_mean"], checkpoint["obs_std"]
 
@@ -326,7 +314,7 @@ def main(argv=None) -> int:
             win_obs_t = torch.tensor(
                 standardize(window_observables, obs_mean, obs_std),
             ).unsqueeze(0)
-            mu, _logvar = model.encode(win_actions_t, win_obs_t)
+            mu = model.abduct(win_actions_t, win_obs_t)
             prev_obs0 = win_obs_t[:, -1, :]
 
             # Last-day-only control: same encoder, a window with all path
@@ -337,7 +325,7 @@ def main(argv=None) -> int:
             lastday_obs_t = torch.tensor(
                 flatten_to_last_day(standardize(window_observables, obs_mean, obs_std)),
             ).unsqueeze(0)
-            lastday_mu, _lastday_logvar = model.encode(lastday_actions_t, lastday_obs_t)
+            lastday_mu = model.abduct(lastday_actions_t, lastday_obs_t)
 
             factual_actions_t = torch.tensor(
                 standardize(factual_actions_raw, action_mean, action_std),
@@ -349,7 +337,7 @@ def main(argv=None) -> int:
             pred_factual = model.rollout(mu, factual_actions_t, prev_obs0)
             pred_cf_abducted = model.rollout(mu, cf_actions_t, prev_obs0)
             pred_cf_lastday = model.rollout(lastday_mu, cf_actions_t, prev_obs0)
-            zero_latent = torch.zeros_like(mu)
+            zero_latent = model.zero_state(1)
             pred_cf_interventional = model.rollout(zero_latent, cf_actions_t, prev_obs0)
 
         true_factual_std = standardize(true_factual_obs_raw, obs_mean, obs_std)
@@ -501,7 +489,8 @@ def main(argv=None) -> int:
         "verdict": verdict,
         "per_example": per_example,
     }
-    (base / "abduction_results.json").write_text(json.dumps(result, indent=2))
+    results_path = base / artifact(args.arch, "abduction_results.json")
+    results_path.write_text(json.dumps(result, indent=2))
 
     print("\nSTEP 3 -- abduction test (four-way comparison):")
     print(f"  n_examples:                {n}")
@@ -532,7 +521,7 @@ def main(argv=None) -> int:
               f"gap_closed={closed_str}  win_rate={row['win_rate_abducted_vs_lastday']:.1%}  "
               f"p={row['p_value_vs_chance']:.4f}{flag}")
     print(f"\n  {verdict}")
-    print(f"\nwrote {base / 'abduction_results.json'}")
+    print(f"\nwrote {results_path}")
     return 0
 
 

@@ -33,7 +33,7 @@ import torch
 from torch import nn
 
 from experiment.abduction import standardize
-from experiment.model import WorldModel
+from experiment.checkpoints import ARCHS, artifact, load_model
 
 L1_WEIGHT = 1e-3
 EXPANSION = 4  # overcomplete factor relative to the latent dimension
@@ -54,20 +54,8 @@ class SparseAutoencoder(nn.Module):
         return recon, code
 
 
-def load_model(base: Path):
-    # weights_only=False -- see experiment/abduction.py's load_model for why.
-    checkpoint = torch.load(base / "world_model.pt", map_location="cpu", weights_only=False)
-    model = WorldModel(
-        n_action=checkpoint["n_action"], n_obs=checkpoint["n_obs"],
-        enc_hidden=checkpoint["enc_hidden"], latent_dim=checkpoint["latent_dim"],
-        dec_hidden=checkpoint["dec_hidden"],
-    )
-    model.load_state_dict(checkpoint["state_dict"])
-    model.eval()
-    return model, checkpoint
-
-
-def encode_all(model: WorldModel, checkpoint: dict, split: dict) -> np.ndarray:
+def encode_all(model, checkpoint: dict, split: dict) -> np.ndarray:
+    """The abducted state per window: gru_vae's `mu`, or the RSSM's final `[h, s]`."""
     with torch.no_grad():
         actions = torch.tensor(
             standardize(split["actions"], checkpoint["action_mean"], checkpoint["action_std"]),
@@ -75,8 +63,8 @@ def encode_all(model: WorldModel, checkpoint: dict, split: dict) -> np.ndarray:
         observables = torch.tensor(
             standardize(split["observables"], checkpoint["obs_mean"], checkpoint["obs_std"]),
         )
-        mu, _logvar = model.encode(actions, observables)
-    return mu.numpy()
+        state = model.abduct(actions, observables)
+    return state.numpy()
 
 
 def best_feature_correlation(codes: np.ndarray, target: np.ndarray) -> tuple[int, float]:
@@ -103,13 +91,14 @@ def best_feature_correlation(codes: np.ndarray, target: np.ndarray) -> tuple[int
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dataset-dir", default="runs/experiment")
+    parser.add_argument("--arch", choices=ARCHS, default="gru_vae")
     args = parser.parse_args(argv)
     base = Path(args.dataset_dir)
 
     torch.manual_seed(SEED)
     np.random.seed(SEED)
 
-    model, checkpoint = load_model(base)
+    model, checkpoint = load_model(base, args.arch)
     train = dict(np.load(base / "windows_train.npz", allow_pickle=True))
     test = dict(np.load(base / "windows_test.npz", allow_pickle=True))
 
@@ -188,7 +177,8 @@ def main(argv=None) -> int:
         "sparsity": sparsity, "probe": probe, "verdict": verdict,
         "history": history,
     }
-    (base / "sae_probe_results.json").write_text(json.dumps(result, indent=2))
+    results_path = base / artifact(args.arch, "sae_probe_results.json")
+    results_path.write_text(json.dumps(result, indent=2))
 
     print("\nSTEP 4 -- sparse autoencoder probe (test-set latents):")
     print(f"  code_dim={code_dim}  mean active/example="
@@ -198,7 +188,7 @@ def main(argv=None) -> int:
         print(f"  best |r| for {name:28s}: {info['abs_pearson_r']:.4f} "
               f"(feature #{info['best_feature_index']})")
     print(f"\n  {verdict}")
-    print(f"\nwrote {base / 'sae_probe_results.json'}")
+    print(f"\nwrote {results_path}")
     return 0
 
 

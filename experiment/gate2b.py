@@ -52,8 +52,8 @@ import numpy as np
 import torch
 
 from experiment.abduction import standardize
+from experiment.checkpoints import ARCHS, artifact, load_model
 from experiment.data import load_daily_trajectory
-from experiment.model import WorldModel
 from experiment.train_world_model import build_future_arrays
 
 #: Part (a) thresholds -- "clearly" above/below the prior's own values (0
@@ -66,22 +66,15 @@ SIGMA_THRESHOLD = 0.9
 MIN_RELATIVE_DEGRADATION = 0.15
 
 
-def load_model(base: Path) -> tuple[WorldModel, dict]:
-    # weights_only=False -- this checkpoint is our own file, carrying numpy
-    # normalization arrays alongside the state_dict (see abduction.py).
-    checkpoint = torch.load(base / "world_model.pt", map_location="cpu", weights_only=False)
-    model = WorldModel(
-        n_action=checkpoint["n_action"], n_obs=checkpoint["n_obs"],
-        enc_hidden=checkpoint["enc_hidden"], latent_dim=checkpoint["latent_dim"],
-        dec_hidden=checkpoint["dec_hidden"],
-    )
-    model.load_state_dict(checkpoint["state_dict"])
-    model.eval()
-    return model, checkpoint
+def part_a_posterior_vs_prior(model, checkpoint: dict, test: dict) -> dict:
+    """Mean |mu|, per-dimension std of mu, and mean sigma over the test set.
 
-
-def part_a_posterior_vs_prior(model: WorldModel, checkpoint: dict, test: dict) -> dict:
-    """Mean |mu|, per-dimension std of mu, and mean sigma over the test set."""
+    For the RSSM this is the final day's posterior, and the thresholds still
+    compare against N(0, 1) -- but an RSSM's prior is learned, not N(0, 1),
+    so passing here does not rule out posterior == prior. The raw final-day
+    KL(q || p) is reported alongside as the direct check; part (b) and the
+    abduction test are the ones that decide.
+    """
     with torch.no_grad():
         actions = torch.tensor(
             standardize(test["actions"], checkpoint["action_mean"], checkpoint["action_std"]),
@@ -89,8 +82,16 @@ def part_a_posterior_vs_prior(model: WorldModel, checkpoint: dict, test: dict) -
         observables = torch.tensor(
             standardize(test["observables"], checkpoint["obs_mean"], checkpoint["obs_std"]),
         )
-        mu, logvar = model.encode(actions, observables)
+        mu, logvar = model.posterior(actions, observables)
         sigma = torch.exp(0.5 * logvar)
+        final_day_kl = None
+        if hasattr(model, "filter"):
+            from experiment.rssm import _gaussian_kl
+            out = model.filter(actions, observables, sample=False)
+            final_day_kl = float(_gaussian_kl(
+                out["post_mu"][:, -1], out["post_logvar"][:, -1],
+                out["prior_mu"][:, -1], out["prior_logvar"][:, -1],
+            ).mean())
 
     mu_np = mu.numpy()
     sigma_np = sigma.numpy()
@@ -117,12 +118,13 @@ def part_a_posterior_vs_prior(model: WorldModel, checkpoint: dict, test: dict) -
         "sigma_threshold": SIGMA_THRESHOLD,
         "dims_with_std_mu_above_threshold": dims_std_ok,
         "dims_with_mean_sigma_below_threshold": dims_sigma_ok,
+        "final_day_kl_posterior_vs_learned_prior": final_day_kl,
         "passed": passed,
     }
 
 
 def part_b_decoder_uses_latent(
-    model: WorldModel, checkpoint: dict, test: dict, scenarios: dict, horizon: int,
+    model, checkpoint: dict, test: dict, scenarios: dict, horizon: int,
 ) -> dict:
     """Multi-step rollout error: true abducted latent vs zeroed latent."""
     future_actions_raw, future_obs_raw = build_future_arrays(test, scenarios, horizon)
@@ -141,11 +143,11 @@ def part_b_decoder_uses_latent(
             standardize(future_obs_raw, checkpoint["obs_mean"], checkpoint["obs_std"]),
         )
 
-        mu, _logvar = model.encode(actions, observables)
+        state = model.abduct(actions, observables)
         prev_obs0 = observables[:, -1, :]
 
-        pred_true_latent = model.rollout(mu, future_actions, prev_obs0)
-        pred_zero_latent = model.rollout(torch.zeros_like(mu), future_actions, prev_obs0)
+        pred_true_latent = model.rollout(state, future_actions, prev_obs0)
+        pred_zero_latent = model.rollout(model.zero_state(state.shape[0]), future_actions, prev_obs0)
 
         true_latent_mse = float(((pred_true_latent - future_observables) ** 2).mean())
         zero_latent_mse = float(((pred_zero_latent - future_observables) ** 2).mean())
@@ -170,10 +172,11 @@ def part_b_decoder_uses_latent(
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dataset-dir", default="runs/experiment")
+    parser.add_argument("--arch", choices=ARCHS, default="gru_vae")
     args = parser.parse_args(argv)
     base = Path(args.dataset_dir)
 
-    model, checkpoint = load_model(base)
+    model, checkpoint = load_model(base, args.arch)
     test = dict(np.load(base / "windows_test.npz", allow_pickle=True))
     windows_meta = json.loads((base / "windows_meta.json").read_text())
     horizon = checkpoint.get("rollout_horizon_days", windows_meta["rollout_k"])
@@ -206,7 +209,8 @@ def main(argv=None) -> int:
             ) + "STOP. Do not proceed to Step 3 with this checkpoint."
         ),
     }
-    (base / "gate2b_results.json").write_text(json.dumps(result, indent=2))
+    results_path = base / artifact(args.arch, "gate2b_results.json")
+    results_path.write_text(json.dumps(result, indent=2))
 
     print("GATE 2b -- latent informativeness")
     print("\n(a) posterior vs prior (test set, n={}):".format(part_a["n_examples"]))
@@ -225,7 +229,7 @@ def main(argv=None) -> int:
     print(f"    PART B: {'PASS' if part_b['passed'] else 'FAIL'}")
 
     print(f"\n{result['verdict']}")
-    print(f"\nwrote {base / 'gate2b_results.json'}")
+    print(f"\nwrote {results_path}")
     return 0 if overall_pass else 1
 
 

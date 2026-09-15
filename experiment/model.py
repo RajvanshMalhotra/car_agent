@@ -67,6 +67,35 @@ class WorldModel(nn.Module):
         mu, logvar = stats.chunk(2, dim=-1)
         return mu, logvar
 
+    def posterior(self, actions: torch.Tensor, observables: torch.Tensor):
+        """q(z | window) -- the belief gate2b compares against the prior."""
+        return self.encode(actions, observables)
+
+    def abduct(self, actions: torch.Tensor, observables: torch.Tensor) -> torch.Tensor:
+        """The posterior mean -- the protocol name `experiment/rssm.py` shares."""
+        mu, _logvar = self.encode(actions, observables)
+        return mu
+
+    def zero_state(self, batch: int) -> torch.Tensor:
+        """The prior mean: the uninformed latent, the interventional control."""
+        device = next(self.parameters()).device
+        return torch.zeros(batch, self.latent_dim, device=device)
+
+    def sample_rollouts(
+        self, actions: torch.Tensor, observables: torch.Tensor,
+        future_actions: torch.Tensor, n: int,
+    ) -> torch.Tensor:
+        """`n` futures per window, each from one posterior draw of `z`.
+
+        The rollout itself is deterministic, so all the spread comes from
+        that single draw. Returns `[n, B, K, n_obs]`.
+        """
+        batch = actions.shape[0]
+        mu, logvar = self.encode(actions, observables)
+        z = self.reparameterize(mu.repeat(n, 1), logvar.repeat(n, 1))
+        pred = self.rollout(z, future_actions.repeat(n, 1, 1), observables[:, -1, :].repeat(n, 1))
+        return pred.view(n, batch, *pred.shape[1:])
+
     @staticmethod
     def reparameterize(mu: torch.Tensor, logvar: torch.Tensor) -> torch.Tensor:
         std = torch.exp(0.5 * logvar)
