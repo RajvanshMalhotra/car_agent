@@ -1,0 +1,51 @@
+{
+  "source": "runs/experiment/daily_trajectory.csv",
+  "seed": 3,
+  "daily_noise_channel": {
+    "v_mean": "v_bat_v",
+    "v_min": "v_bat_v",
+    "v_max": "v_bat_v",
+    "i_mean": "i_bat_a",
+    "i_mean_abs": "i_bat_a",
+    "t_bat_mean": "t_bat_c",
+    "t_bat_max": "t_bat_c"
+  },
+  "sensor_spec": {
+    "enabled": true,
+    "seed": 0,
+    "scale": 1.0,
+    "measurable_channels": [
+      "speed_mps",
+      "rpm",
+      "throttle",
+      "coolant_c",
+      "i_bat_a",
+      "v_bat_v",
+      "t_bat_c"
+    ],
+    "latent_channels": [
+      "soc",
+      "r_int_ohm",
+      "t_bay_c",
+      "soh"
+    ],
+    "sigmas": {
+      "speed_mps": 0.05,
+      "rpm": 5.0,
+      "throttle": 0.005,
+      "coolant_c": 1.0,
+      "i_bat_a": "0.005 * |reading|, floor 0.1",
+      "v_bat_v": 0.01,
+      "t_bat_c": 0.5
+    }
+  },
+  "realised_noise_std": {
+    "v_mean": 0.009995149488472363,
+    "v_min": 0.0100055425611271,
+    "v_max": 0.009981039370758478,
+    "i_mean": 0.10021716350359154,
+    "i_mean_abs": 0.09612526943504575,
+    "t_bat_mean": 0.5011119454666325,
+    "t_bat_max": 0.49950779917255406
+  }
+}

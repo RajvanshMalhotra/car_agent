@@ -1,0 +1,61 @@
+{
+  "git_commit": "2c3b19b9fb4c6520b2738519e166740ca2affddb",
+  "trajectory": "runs/telemetry.csv",
+  "horizon_days": 2000,
+  "scenarios": 80,
+  "day_rows": 160000,
+  "sampling_seed": 42,
+  "axes": {
+    "ambient_c": [
+      -10.0,
+      10.0,
+      25.0,
+      42.0
+    ],
+    "scenarios_per_ambient": 20,
+    "trip_minutes_range": [
+      1.5,
+      20.0
+    ],
+    "layup_days_range": [
+      0.0,
+      30.0
+    ],
+    "layup_gap_days_range": [
+      20.0,
+      120.0
+    ],
+    "parasitic_a_range": [
+      0.02,
+      0.1
+    ],
+    "trips_per_day": 2.0,
+    "soak_h": 8.0
+  },
+  "action_features": [
+    "is_layup",
+    "driving_minutes",
+    "soak_hours",
+    "ambient_c"
+  ],
+  "observable_features": [
+    "v_mean",
+    "v_min",
+    "v_max",
+    "i_mean",
+    "i_mean_abs",
+    "t_bat_mean",
+    "t_bat_max",
+    "t_bay_mean",
+    "t_bay_max",
+    "soc"
+  ],
+  "hidden_fields": [
+    "crystal",
+    "corrosion_hours",
+    "shedding",
+    "soh"
+  ],
+  "elapsed_s": 1316.7795791625977,
+  "note": "Literal day-by-day calendar simulation -- NOT cell.life.project()'s period-averaged damage. See experiment/calendar_sim.py's module docstring for why: this dataset needs the real daily observable pattern (trip count, driving minutes, voltage/current/temperature), which the period-average abstraction destroys."
+}

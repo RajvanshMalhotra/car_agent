@@ -1,0 +1,62 @@
+wrote runs/experiment_hot_noisy/daily_trajectory.csv (80 scenarios)
+  v_mean      realised noise std 0.0100
+  v_min       realised noise std 0.0100
+  v_max       realised noise std 0.0100
+  i_mean      realised noise std 0.1002
+  i_mean_abs  realised noise std 0.0961
+  t_bat_mean  realised noise std 0.5011
+  t_bat_max   realised noise std 0.4995
+train: 6000 windows from 51 scenarios (97461 candidates available)
+val: 1000 windows from 9 scenarios (17199 candidates available)
+test: 1500 windows from 20 scenarios (38220 candidates available)
+
+GATE 1 -- crystal target histogram (10 bins):
+  train:
+    [0.0,0.1):   600  (10.0%)
+    [0.1,0.2):   600  (10.0%)
+    [0.2,0.3):   600  (10.0%)
+    [0.3,0.4):   600  (10.0%)
+    [0.4,0.5):   600  (10.0%)
+    [0.5,0.6):   600  (10.0%)
+    [0.6,0.7):   600  (10.0%)
+    [0.7,0.8):   600  (10.0%)
+    [0.8,0.9):   600  (10.0%)
+    [0.9,1.0):   600  (10.0%)
+  val:
+    [0.0,0.1):   100  (10.0%)
+    [0.1,0.2):   100  (10.0%)
+    [0.2,0.3):   100  (10.0%)
+    [0.3,0.4):   100  (10.0%)
+    [0.4,0.5):   100  (10.0%)
+    [0.5,0.6):   100  (10.0%)
+    [0.6,0.7):   100  (10.0%)
+    [0.7,0.8):   100  (10.0%)
+    [0.8,0.9):   100  (10.0%)
+    [0.9,1.0):   100  (10.0%)
+  test:
+    [0.0,0.1):   150  (10.0%)
+    [0.1,0.2):   150  (10.0%)
+    [0.2,0.3):   150  (10.0%)
+    [0.3,0.4):   150  (10.0%)
+    [0.4,0.5):   150  (10.0%)
+    [0.5,0.6):   150  (10.0%)
+    [0.6,0.7):   150  (10.0%)
+    [0.7,0.8):   150  (10.0%)
+    [0.8,0.9):   150  (10.0%)
+    [0.9,1.0):   150  (10.0%)
+
+largest single bin fraction across both splits: 10.0% (PASS -- gate wants <= ~25%)
+[500/6000] built counterfactual targets
+[1000/6000] built counterfactual targets
+[1500/6000] built counterfactual targets
+[2000/6000] built counterfactual targets
+[2500/6000] built counterfactual targets
+[3000/6000] built counterfactual targets
+[3500/6000] built counterfactual targets
+[4000/6000] built counterfactual targets
+[4500/6000] built counterfactual targets
+[5000/6000] built counterfactual targets
+[5500/6000] built counterfactual targets
+[6000/6000] built counterfactual targets
+
+wrote runs/experiment_hot_noisy/windows_train_cf.npz (6000 examples, 30-day randomized counterfactual continuations)

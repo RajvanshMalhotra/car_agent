@@ -1,0 +1,29 @@
+[200/1500] running means: factual=0.1441 counterfactual=0.1453 lastday=0.1908 interventional=0.6118
+[400/1500] running means: factual=0.1485 counterfactual=0.1454 lastday=0.1889 interventional=0.5832
+[600/1500] running means: factual=0.1466 counterfactual=0.1440 lastday=0.1916 interventional=0.5604
+[800/1500] running means: factual=0.1463 counterfactual=0.1429 lastday=0.1885 interventional=0.5571
+[1000/1500] running means: factual=0.1446 counterfactual=0.1406 lastday=0.1877 interventional=0.5596
+[1200/1500] running means: factual=0.1452 counterfactual=0.1418 lastday=0.1906 interventional=0.5615
+[1400/1500] running means: factual=0.1463 counterfactual=0.1433 lastday=0.1941 interventional=0.5782
+[1500/1500] running means: factual=0.1467 counterfactual=0.1438 lastday=0.1953 interventional=0.5820
+
+STEP 3 -- abduction test (four-way comparison):
+  n_examples:                1500
+  FACTUAL error:             0.14667
+  COUNTERFACTUAL abducted:   0.14377
+  COUNTERFACTUAL lastday:    0.19528   <-- the control that matters
+  INTERVENTIONAL zero:       0.58197
+  fraction of factual->lastday gap closed: 106.0%
+  fraction of factual->zero gap closed (weak control): 100.7%
+  win rate, abducted vs lastday: 862/1500 (57.5%, p=0.0000 vs chance)
+
+  crystal-bin breakdown:
+    [0.0,0.2): n= 300  factual=0.0906  abducted=0.1067  lastday=0.1375  gap_closed=65.7%  win_rate=53.7%  p=0.2040
+    [0.2,0.4): n= 300  factual=0.1094  abducted=0.1295  lastday=0.1540  gap_closed=55.0%  win_rate=53.7%  p=0.2040
+    [0.4,0.6): n= 300  factual=0.1432  abducted=0.1604  lastday=0.2150  gap_closed=76.1%  win_rate=59.0%  p=0.0018
+    [0.6,0.8): n= 300  factual=0.1615  abducted=0.1617  lastday=0.2204  gap_closed=99.6%  win_rate=63.3%  p=0.0000
+    [0.8,1.0): n= 300  factual=0.2288  abducted=0.1606  lastday=0.2494  gap_closed=430.1%  win_rate=57.7%  p=0.0079
+
+  GENUINE PATH-DEPENDENT ABDUCTION: the win rate (57.5%, p=0.0000) is statistically significant, and no crystal bin significantly favors the last-day control -- the effect is real and not concentrated in a way that contradicts it elsewhere. The model is using information about the window's HISTORY that the final day alone does not contain.
+
+wrote runs/experiment_hot_noisy/rssm_abduction_results.json

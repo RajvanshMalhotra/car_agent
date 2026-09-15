@@ -1,0 +1,722 @@
+[
+  {
+    "scenario": "amb-10_s0000",
+    "ambient_c": -10.0,
+    "trip_minutes": 13.32939577147085,
+    "layup_days": 0.7503226566800081,
+    "layup_gap_days": 47.50293183691193,
+    "parasitic_a": 0.03785685905190582,
+    "seed": 0
+  },
+  {
+    "scenario": "amb-10_s0001",
+    "ambient_c": -10.0,
+    "trip_minutes": 15.12471746203423,
+    "layup_days": 20.300984622687338,
+    "layup_gap_days": 109.21795677048453,
+    "parasitic_a": 0.02695510661035329,
+    "seed": 1
+  },
+  {
+    "scenario": "amb-10_s0002",
+    "ambient_c": -10.0,
+    "trip_minutes": 9.305553664177502,
+    "layup_days": 0.8939165831421103,
+    "layup_gap_days": 41.86379748036033,
+    "parasitic_a": 0.060428423048268995,
+    "seed": 2
+  },
+  {
+    "scenario": "amb-10_s0003",
+    "ambient_c": -10.0,
+    "trip_minutes": 1.9909154391514772,
+    "layup_days": 5.965129520599454,
+    "layup_gap_days": 84.98844377795233,
+    "parasitic_a": 0.06359531844825733,
+    "seed": 3
+  },
+  {
+    "scenario": "amb-10_s0004",
+    "ambient_c": -10.0,
+    "trip_minutes": 5.578151507752889,
+    "layup_days": 17.677970516277263,
+    "layup_gap_days": 100.94304566778267,
+    "parasitic_a": 0.02051990077424488,
+    "seed": 4
+  },
+  {
+    "scenario": "amb-10_s0005",
+    "ambient_c": -10.0,
+    "trip_minutes": 16.407656158906946,
+    "layup_days": 20.944181849646807,
+    "layup_gap_days": 54.02505165179919,
+    "parasitic_a": 0.03243835998494252,
+    "seed": 5
+  },
+  {
+    "scenario": "amb-10_s0006",
+    "ambient_c": -10.0,
+    "trip_minutes": 19.208441835825454,
+    "layup_days": 10.097836353378803,
+    "layup_gap_days": 29.27458433801479,
+    "parasitic_a": 0.027737310146677123,
+    "seed": 6
+  },
+  {
+    "scenario": "amb-10_s0007",
+    "ambient_c": -10.0,
+    "trip_minutes": 17.178645777428006,
+    "layup_days": 18.11178094100673,
+    "layup_gap_days": 100.71282732743802,
+    "parasitic_a": 0.07837854293550543,
+    "seed": 7
+  },
+  {
+    "scenario": "amb-10_s0008",
+    "ambient_c": -10.0,
+    "trip_minutes": 11.420219691911964,
+    "layup_days": 29.19347291938112,
+    "layup_gap_days": 57.853437720835345,
+    "parasitic_a": 0.06416325050185816,
+    "seed": 8
+  },
+  {
+    "scenario": "amb-10_s0009",
+    "ambient_c": -10.0,
+    "trip_minutes": 16.843986288680405,
+    "layup_days": 18.55559257092738,
+    "layup_gap_days": 106.17069003107773,
+    "parasitic_a": 0.06618817162054097,
+    "seed": 9
+  },
+  {
+    "scenario": "amb-10_s0010",
+    "ambient_c": -10.0,
+    "trip_minutes": 14.534578969976085,
+    "layup_days": 1.3747315096698665,
+    "layup_gap_days": 42.78982756515468,
+    "parasitic_a": 0.04315103708816857,
+    "seed": 10
+  },
+  {
+    "scenario": "amb-10_s0011",
+    "ambient_c": -10.0,
+    "trip_minutes": 2.9761515730871086,
+    "layup_days": 6.983726590830905,
+    "layup_gap_days": 30.100142940972912,
+    "parasitic_a": 0.04223788824880737,
+    "seed": 11
+  },
+  {
+    "scenario": "amb-10_s0012",
+    "ambient_c": -10.0,
+    "trip_minutes": 13.260162218891404,
+    "layup_days": 10.944965369102528,
+    "layup_gap_days": 57.018096711688266,
+    "parasitic_a": 0.03676056246171902,
+    "seed": 12
+  },
+  {
+    "scenario": "amb-10_s0013",
+    "ambient_c": -10.0,
+    "trip_minutes": 6.439089707908597,
+    "layup_days": 28.09963763137482,
+    "layup_gap_days": 84.80353852465936,
+    "parasitic_a": 0.06873048045335906,
+    "seed": 13
+  },
+  {
+    "scenario": "amb-10_s0014",
+    "ambient_c": -10.0,
+    "trip_minutes": 4.666064991664794,
+    "layup_days": 21.873803938510477,
+    "layup_gap_days": 36.340249376192844,
+    "parasitic_a": 0.05035643534061182,
+    "seed": 14
+  },
+  {
+    "scenario": "amb-10_s0015",
+    "ambient_c": -10.0,
+    "trip_minutes": 19.806181986777013,
+    "layup_days": 19.199992795622787,
+    "layup_gap_days": 75.69497437746463,
+    "parasitic_a": 0.07476914007918997,
+    "seed": 15
+  },
+  {
+    "scenario": "amb-10_s0016",
+    "ambient_c": -10.0,
+    "trip_minutes": 17.09276052351148,
+    "layup_days": 23.279997346387344,
+    "layup_gap_days": 42.90480719641044,
+    "parasitic_a": 0.022568019512323022,
+    "seed": 16
+  },
+  {
+    "scenario": "amb-10_s0017",
+    "ambient_c": -10.0,
+    "trip_minutes": 7.335881389093015,
+    "layup_days": 8.032226279271082,
+    "layup_gap_days": 41.09828435863265,
+    "parasitic_a": 0.09543277714680436,
+    "seed": 17
+  },
+  {
+    "scenario": "amb-10_s0018",
+    "ambient_c": -10.0,
+    "trip_minutes": 17.712801089744374,
+    "layup_days": 9.440336423954337,
+    "layup_gap_days": 85.543866529488,
+    "parasitic_a": 0.05165055208485314,
+    "seed": 18
+  },
+  {
+    "scenario": "amb-10_s0019",
+    "ambient_c": -10.0,
+    "trip_minutes": 18.419130410200054,
+    "layup_days": 13.765555577621964,
+    "layup_gap_days": 46.488016649805246,
+    "parasitic_a": 0.03973020061551868,
+    "seed": 19
+  },
+  {
+    "scenario": "amb10_s0020",
+    "ambient_c": 10.0,
+    "trip_minutes": 11.885310482018289,
+    "layup_days": 7.882248255688058,
+    "layup_gap_days": 78.45859902235405,
+    "parasitic_a": 0.09182583068819816,
+    "seed": 20
+  },
+  {
+    "scenario": "amb10_s0021",
+    "ambient_c": 10.0,
+    "trip_minutes": 8.88890934509735,
+    "layup_days": 6.5796227747185,
+    "layup_gap_days": 119.75376064951102,
+    "parasitic_a": 0.06076210349411716,
+    "seed": 21
+  },
+  {
+    "scenario": "amb10_s0022",
+    "ambient_c": 10.0,
+    "trip_minutes": 3.181824125215187,
+    "layup_days": 1.413491262742037,
+    "layup_gap_days": 30.964913035065916,
+    "parasitic_a": 0.0701956833362472,
+    "seed": 22
+  },
+  {
+    "scenario": "amb10_s0023",
+    "ambient_c": 10.0,
+    "trip_minutes": 16.153468240714837,
+    "layup_days": 12.66479900399052,
+    "layup_gap_days": 26.352770615195713,
+    "parasitic_a": 0.050529542920522946,
+    "seed": 23
+  },
+  {
+    "scenario": "amb10_s0024",
+    "ambient_c": 10.0,
+    "trip_minutes": 19.92824553444179,
+    "layup_days": 15.873430352974111,
+    "layup_gap_days": 117.10783776136182,
+    "parasitic_a": 0.08886237617875985,
+    "seed": 24
+  },
+  {
+    "scenario": "amb10_s0025",
+    "ambient_c": 10.0,
+    "trip_minutes": 1.7123989059421634,
+    "layup_days": 21.62165458080584,
+    "layup_gap_days": 88.17103690265748,
+    "parasitic_a": 0.06295762643270361,
+    "seed": 25
+  },
+  {
+    "scenario": "amb10_s0026",
+    "ambient_c": 10.0,
+    "trip_minutes": 6.436266014122041,
+    "layup_days": 19.228853957394243,
+    "layup_gap_days": 31.155217359587645,
+    "parasitic_a": 0.054781220053528396,
+    "seed": 26
+  },
+  {
+    "scenario": "amb10_s0027",
+    "ambient_c": 10.0,
+    "trip_minutes": 9.89388856709032,
+    "layup_days": 28.614477825632402,
+    "layup_gap_days": 107.58529403781941,
+    "parasitic_a": 0.04107112406008726,
+    "seed": 27
+  },
+  {
+    "scenario": "amb10_s0028",
+    "ambient_c": 10.0,
+    "trip_minutes": 10.76084309143052,
+    "layup_days": 5.359556415903941,
+    "layup_gap_days": 111.26278393448204,
+    "parasitic_a": 0.08964148558694136,
+    "seed": 28
+  },
+  {
+    "scenario": "amb10_s0029",
+    "ambient_c": 10.0,
+    "trip_minutes": 7.021228641799708,
+    "layup_days": 19.168484845980156,
+    "layup_gap_days": 80.89702114381723,
+    "parasitic_a": 0.03222714148397079,
+    "seed": 29
+  },
+  {
+    "scenario": "amb10_s0030",
+    "ambient_c": 10.0,
+    "trip_minutes": 15.606449801390298,
+    "layup_days": 16.18137090358877,
+    "layup_gap_days": 97.86264786305583,
+    "parasitic_a": 0.062428293775614194,
+    "seed": 30
+  },
+  {
+    "scenario": "amb10_s0031",
+    "ambient_c": 10.0,
+    "trip_minutes": 1.5105800783669547,
+    "layup_days": 9.724681710140192,
+    "layup_gap_days": 21.94767423858323,
+    "parasitic_a": 0.09432788930116938,
+    "seed": 31
+  },
+  {
+    "scenario": "amb10_s0032",
+    "ambient_c": 10.0,
+    "trip_minutes": 17.75635473972891,
+    "layup_days": 24.949965880835382,
+    "layup_gap_days": 50.751412540266145,
+    "parasitic_a": 0.024634013319535006,
+    "seed": 32
+  },
+  {
+    "scenario": "amb10_s0033",
+    "ambient_c": 10.0,
+    "trip_minutes": 17.74317758527475,
+    "layup_days": 28.408483358939822,
+    "layup_gap_days": 28.565345206787878,
+    "parasitic_a": 0.058879237065329104,
+    "seed": 33
+  },
+  {
+    "scenario": "amb10_s0034",
+    "ambient_c": 10.0,
+    "trip_minutes": 2.7804315916650966,
+    "layup_days": 22.818064957716945,
+    "layup_gap_days": 96.58344293069878,
+    "parasitic_a": 0.030271317159981024,
+    "seed": 34
+  },
+  {
+    "scenario": "amb10_s0035",
+    "ambient_c": 10.0,
+    "trip_minutes": 10.29272399482653,
+    "layup_days": 16.494107804848316,
+    "layup_gap_days": 46.50566289400591,
+    "parasitic_a": 0.0897946432868206,
+    "seed": 35
+  },
+  {
+    "scenario": "amb10_s0036",
+    "ambient_c": 10.0,
+    "trip_minutes": 9.328051893716408,
+    "layup_days": 6.353946163262462,
+    "layup_gap_days": 73.92960887794584,
+    "parasitic_a": 0.07839448552719809,
+    "seed": 36
+  },
+  {
+    "scenario": "amb10_s0037",
+    "ambient_c": 10.0,
+    "trip_minutes": 5.221294672709375,
+    "layup_days": 9.351488739026848,
+    "layup_gap_days": 119.51493566608947,
+    "parasitic_a": 0.07199024461115629,
+    "seed": 37
+  },
+  {
+    "scenario": "amb10_s0038",
+    "ambient_c": 10.0,
+    "trip_minutes": 9.604851552418324,
+    "layup_days": 15.52727523106772,
+    "layup_gap_days": 32.100419586826575,
+    "parasitic_a": 0.037975786962524585,
+    "seed": 38
+  },
+  {
+    "scenario": "amb10_s0039",
+    "ambient_c": 10.0,
+    "trip_minutes": 7.754582899727923,
+    "layup_days": 17.649261553717,
+    "layup_gap_days": 43.0114732596577,
+    "parasitic_a": 0.03761739075612476,
+    "seed": 39
+  },
+  {
+    "scenario": "amb25_s0040",
+    "ambient_c": 25.0,
+    "trip_minutes": 2.8133720911671016,
+    "layup_days": 18.93308871810297,
+    "layup_gap_days": 42.89417838111544,
+    "parasitic_a": 0.09243360104049024,
+    "seed": 40
+  },
+  {
+    "scenario": "amb25_s0041",
+    "ambient_c": 25.0,
+    "trip_minutes": 17.40325490469431,
+    "layup_days": 2.1257204966596035,
+    "layup_gap_days": 43.80046343689952,
+    "parasitic_a": 0.07351822226370244,
+    "seed": 41
+  },
+  {
+    "scenario": "amb25_s0042",
+    "ambient_c": 25.0,
+    "trip_minutes": 5.463380936353114,
+    "layup_days": 3.96935546175075,
+    "layup_gap_days": 113.5514240580671,
+    "parasitic_a": 0.06568344746602275,
+    "seed": 42
+  },
+  {
+    "scenario": "amb25_s0043",
+    "ambient_c": 25.0,
+    "trip_minutes": 10.244413986768192,
+    "layup_days": 23.538582728722602,
+    "layup_gap_days": 100.74969977666434,
+    "parasitic_a": 0.03523279314895022,
+    "seed": 43
+  },
+  {
+    "scenario": "amb25_s0044",
+    "ambient_c": 25.0,
+    "trip_minutes": 3.293220063233232,
+    "layup_days": 12.931535472191326,
+    "layup_gap_days": 62.35786230199208,
+    "parasitic_a": 0.057361973442934006,
+    "seed": 44
+  },
+  {
+    "scenario": "amb25_s0045",
+    "ambient_c": 25.0,
+    "trip_minutes": 14.987903215007236,
+    "layup_days": 20.200936418799046,
+    "layup_gap_days": 118.41652113659661,
+    "parasitic_a": 0.027873429692156712,
+    "seed": 45
+  },
+  {
+    "scenario": "amb25_s0046",
+    "ambient_c": 25.0,
+    "trip_minutes": 8.948493718891973,
+    "layup_days": 10.179078161848894,
+    "layup_gap_days": 106.16725363527911,
+    "parasitic_a": 0.03989250671362285,
+    "seed": 46
+  },
+  {
+    "scenario": "amb25_s0047",
+    "ambient_c": 25.0,
+    "trip_minutes": 5.018864806155013,
+    "layup_days": 13.458406434993957,
+    "layup_gap_days": 62.18816398344042,
+    "parasitic_a": 0.04228361157335524,
+    "seed": 47
+  },
+  {
+    "scenario": "amb25_s0048",
+    "ambient_c": 25.0,
+    "trip_minutes": 6.121419285818859,
+    "layup_days": 27.697967978280385,
+    "layup_gap_days": 64.3130745053457,
+    "parasitic_a": 0.08890792838094645,
+    "seed": 48
+  },
+  {
+    "scenario": "amb25_s0049",
+    "ambient_c": 25.0,
+    "trip_minutes": 11.681018280322188,
+    "layup_days": 1.517649885746437,
+    "layup_gap_days": 119.92824684127267,
+    "parasitic_a": 0.08688220680639616,
+    "seed": 49
+  },
+  {
+    "scenario": "amb25_s0050",
+    "ambient_c": 25.0,
+    "trip_minutes": 19.426430759767896,
+    "layup_days": 27.791009490243827,
+    "layup_gap_days": 104.86957344143055,
+    "parasitic_a": 0.03330488884831312,
+    "seed": 50
+  },
+  {
+    "scenario": "amb25_s0051",
+    "ambient_c": 25.0,
+    "trip_minutes": 10.484360820838292,
+    "layup_days": 6.41241897597545,
+    "layup_gap_days": 60.10402925494526,
+    "parasitic_a": 0.024690831997774314,
+    "seed": 51
+  },
+  {
+    "scenario": "amb25_s0052",
+    "ambient_c": 25.0,
+    "trip_minutes": 8.511002701072947,
+    "layup_days": 29.559265313391776,
+    "layup_gap_days": 46.520305817215196,
+    "parasitic_a": 0.08272564815588555,
+    "seed": 52
+  },
+  {
+    "scenario": "amb25_s0053",
+    "ambient_c": 25.0,
+    "trip_minutes": 9.917654795774151,
+    "layup_days": 12.690224579704887,
+    "layup_gap_days": 115.73176408596731,
+    "parasitic_a": 0.09963381515941712,
+    "seed": 53
+  },
+  {
+    "scenario": "amb25_s0054",
+    "ambient_c": 25.0,
+    "trip_minutes": 11.781713983003938,
+    "layup_days": 21.55224825888978,
+    "layup_gap_days": 35.47968252740641,
+    "parasitic_a": 0.04373662603956514,
+    "seed": 54
+  },
+  {
+    "scenario": "amb25_s0055",
+    "ambient_c": 25.0,
+    "trip_minutes": 19.421123251929437,
+    "layup_days": 17.375408724487688,
+    "layup_gap_days": 74.21952013742742,
+    "parasitic_a": 0.07983804483032513,
+    "seed": 55
+  },
+  {
+    "scenario": "amb25_s0056",
+    "ambient_c": 25.0,
+    "trip_minutes": 2.557557548788437,
+    "layup_days": 17.525327833769136,
+    "layup_gap_days": 70.28503829195137,
+    "parasitic_a": 0.08821759136386284,
+    "seed": 56
+  },
+  {
+    "scenario": "amb25_s0057",
+    "ambient_c": 25.0,
+    "trip_minutes": 4.41250546688044,
+    "layup_days": 28.82336709823351,
+    "layup_gap_days": 28.011146524058688,
+    "parasitic_a": 0.03486599687845786,
+    "seed": 57
+  },
+  {
+    "scenario": "amb25_s0058",
+    "ambient_c": 25.0,
+    "trip_minutes": 12.508149469325511,
+    "layup_days": 20.256376608122704,
+    "layup_gap_days": 43.52038950009312,
+    "parasitic_a": 0.029590929115769937,
+    "seed": 58
+  },
+  {
+    "scenario": "amb25_s0059",
+    "ambient_c": 25.0,
+    "trip_minutes": 17.970315311394593,
+    "layup_days": 7.386460433658746,
+    "layup_gap_days": 79.45191535334412,
+    "parasitic_a": 0.06955052082656825,
+    "seed": 59
+  },
+  {
+    "scenario": "amb42_s0060",
+    "ambient_c": 42.0,
+    "trip_minutes": 9.25566093371364,
+    "layup_days": 17.51016867873674,
+    "layup_gap_days": 72.27827155319588,
+    "parasitic_a": 0.09477650061891418,
+    "seed": 60
+  },
+  {
+    "scenario": "amb42_s0061",
+    "ambient_c": 42.0,
+    "trip_minutes": 5.278795189335424,
+    "layup_days": 21.485754023682443,
+    "layup_gap_days": 43.8685952615846,
+    "parasitic_a": 0.05166286774330037,
+    "seed": 61
+  },
+  {
+    "scenario": "amb42_s0062",
+    "ambient_c": 42.0,
+    "trip_minutes": 13.926269124759468,
+    "layup_days": 8.999912393962866,
+    "layup_gap_days": 51.6177196271854,
+    "parasitic_a": 0.08014915939315218,
+    "seed": 62
+  },
+  {
+    "scenario": "amb42_s0063",
+    "ambient_c": 42.0,
+    "trip_minutes": 2.8420476181234102,
+    "layup_days": 13.748565678557584,
+    "layup_gap_days": 119.84544408544423,
+    "parasitic_a": 0.09968771582840756,
+    "seed": 63
+  },
+  {
+    "scenario": "amb42_s0064",
+    "ambient_c": 42.0,
+    "trip_minutes": 2.8553233403432103,
+    "layup_days": 6.394629368011212,
+    "layup_gap_days": 46.52004147504013,
+    "parasitic_a": 0.09466075023949673,
+    "seed": 64
+  },
+  {
+    "scenario": "amb42_s0065",
+    "ambient_c": 42.0,
+    "trip_minutes": 17.795987213199133,
+    "layup_days": 26.378107274536283,
+    "layup_gap_days": 56.9527088738884,
+    "parasitic_a": 0.03261974658857856,
+    "seed": 65
+  },
+  {
+    "scenario": "amb42_s0066",
+    "ambient_c": 42.0,
+    "trip_minutes": 16.924281660836428,
+    "layup_days": 21.106197752621128,
+    "layup_gap_days": 81.16777657259502,
+    "parasitic_a": 0.09897864509052035,
+    "seed": 66
+  },
+  {
+    "scenario": "amb42_s0067",
+    "ambient_c": 42.0,
+    "trip_minutes": 13.598561877648553,
+    "layup_days": 0.23469321456473846,
+    "layup_gap_days": 101.71041351154616,
+    "parasitic_a": 0.04395030017599823,
+    "seed": 67
+  },
+  {
+    "scenario": "amb42_s0068",
+    "ambient_c": 42.0,
+    "trip_minutes": 13.77269122687243,
+    "layup_days": 28.16790011781312,
+    "layup_gap_days": 33.42911143933677,
+    "parasitic_a": 0.029234293633528176,
+    "seed": 68
+  },
+  {
+    "scenario": "amb42_s0069",
+    "ambient_c": 42.0,
+    "trip_minutes": 3.480165587624226,
+    "layup_days": 16.596709226544476,
+    "layup_gap_days": 47.23482123148163,
+    "parasitic_a": 0.06838638616241792,
+    "seed": 69
+  },
+  {
+    "scenario": "amb42_s0070",
+    "ambient_c": 42.0,
+    "trip_minutes": 14.775825462067761,
+    "layup_days": 6.107919369823588,
+    "layup_gap_days": 83.42379588850798,
+    "parasitic_a": 0.04111871213043275,
+    "seed": 70
+  },
+  {
+    "scenario": "amb42_s0071",
+    "ambient_c": 42.0,
+    "trip_minutes": 10.537839264763466,
+    "layup_days": 27.160094732379697,
+    "layup_gap_days": 104.61037132948555,
+    "parasitic_a": 0.027383877417018674,
+    "seed": 71
+  },
+  {
+    "scenario": "amb42_s0072",
+    "ambient_c": 42.0,
+    "trip_minutes": 9.336151792428938,
+    "layup_days": 8.300406719167551,
+    "layup_gap_days": 20.35456890877823,
+    "parasitic_a": 0.08168953784157017,
+    "seed": 72
+  },
+  {
+    "scenario": "amb42_s0073",
+    "ambient_c": 42.0,
+    "trip_minutes": 13.286597480075523,
+    "layup_days": 7.858657873030445,
+    "layup_gap_days": 94.12309083479308,
+    "parasitic_a": 0.0641344336901113,
+    "seed": 73
+  },
+  {
+    "scenario": "amb42_s0074",
+    "ambient_c": 42.0,
+    "trip_minutes": 9.412208001142567,
+    "layup_days": 0.29009098825019897,
+    "layup_gap_days": 27.524386007376705,
+    "parasitic_a": 0.09064851146401144,
+    "seed": 74
+  },
+  {
+    "scenario": "amb42_s0075",
+    "ambient_c": 42.0,
+    "trip_minutes": 18.222678573858023,
+    "layup_days": 16.36770867616567,
+    "layup_gap_days": 103.45950198860167,
+    "parasitic_a": 0.06660076531918352,
+    "seed": 75
+  },
+  {
+    "scenario": "amb42_s0076",
+    "ambient_c": 42.0,
+    "trip_minutes": 4.2397350329984285,
+    "layup_days": 3.8233655784641627,
+    "layup_gap_days": 50.825834993013366,
+    "parasitic_a": 0.09191851909940721,
+    "seed": 76
+  },
+  {
+    "scenario": "amb42_s0077",
+    "ambient_c": 42.0,
+    "trip_minutes": 16.228262640428774,
+    "layup_days": 25.821077460027084,
+    "layup_gap_days": 109.89246365264746,
+    "parasitic_a": 0.03680612306718033,
+    "seed": 77
+  },
+  {
+    "scenario": "amb42_s0078",
+    "ambient_c": 42.0,
+    "trip_minutes": 6.116300175624102,
+    "layup_days": 3.0838086501535686,
+    "layup_gap_days": 98.01162418714426,
+    "parasitic_a": 0.09073077611608071,
+    "seed": 78
+  },
+  {
+    "scenario": "amb42_s0079",
+    "ambient_c": 42.0,
+    "trip_minutes": 9.01798171189416,
+    "layup_days": 18.619845304521384,
+    "layup_gap_days": 35.455333833220465,
+    "parasitic_a": 0.09439048125549396,
+    "seed": 79
+  }
+]
