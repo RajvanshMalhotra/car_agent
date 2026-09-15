@@ -45,6 +45,7 @@ from torch import nn
 from experiment.calendar_sim import OBSERVABLE_FEATURES
 from experiment.checkpoints import BestCheckpoint, artifact, model_config, validation_rollout_mse
 from experiment.data import load_daily_trajectory
+from experiment.pipeline import fit_stats, prepare, standardize_prepared
 from experiment.rssm import RSSM, balanced_kl
 from experiment.train_world_model import (
     BATCH_SIZE,
@@ -74,6 +75,10 @@ def main(argv=None) -> int:
     parser.add_argument("--dataset-dir", default="runs/experiment")
     parser.add_argument("--epochs", type=int, default=EPOCHS)
     parser.add_argument("--device", default="cpu")
+    parser.add_argument("--offsets", action="store_true",
+                        help="round 7: temperatures as offset above ambient")
+    parser.add_argument("--anchored", action="store_true",
+                        help="round 7: decode a correction to the same-day-type anchor")
     args = parser.parse_args(argv)
     base = Path(args.dataset_dir)
 
@@ -90,47 +95,29 @@ def main(argv=None) -> int:
     )
 
     scenarios, _order = load_daily_trajectory(base / "daily_trajectory.csv")
-    train_fa, train_fo = build_future_arrays(train, scenarios, horizon)
-    test_fa, test_fo = build_future_arrays(test, scenarios, horizon)
 
-    action_mean, action_std = _standardize_fit(train["actions"])
-    obs_mean, obs_std = _standardize_fit(train["observables"])
+    # Round 7: the shared pipeline builds every array (see train_world_model.py).
+    prep_train = prepare(train, scenarios, horizon, offsets=args.offsets, cf=train_cf)
+    action_mean, action_std, obs_mean, obs_std = fit_stats(prep_train)
 
-    def tensor(x: np.ndarray, mean: np.ndarray, std: np.ndarray) -> torch.Tensor:
-        return torch.tensor(_apply(x, mean, std), dtype=torch.float32)
+    def to_tensors(prepared: dict[str, np.ndarray]) -> dict[str, torch.Tensor]:
+        std = standardize_prepared(prepared, action_mean, action_std, obs_mean, obs_std)
+        return {key: torch.tensor(value) for key, value in std.items()}
 
-    tr = {
-        "actions": tensor(train["actions"], action_mean, action_std),
-        "observables": tensor(train["observables"], obs_mean, obs_std),
-        "future_actions": tensor(train_fa, action_mean, action_std),
-        "future_observables": tensor(train_fo, obs_mean, obs_std),
-        "cf_actions": tensor(train_cf["cf_actions"], action_mean, action_std),
-        "cf_observables": tensor(train_cf["cf_observables"], obs_mean, obs_std),
-    }
-    te = {
-        "actions": tensor(test["actions"], action_mean, action_std),
-        "observables": tensor(test["observables"], obs_mean, obs_std),
-        "future_actions": tensor(test_fa, action_mean, action_std),
-        "future_observables": tensor(test_fo, obs_mean, obs_std),
-    }
+    tr = to_tensors(prep_train)
+    te = to_tensors(prepare(test, scenarios, horizon, offsets=args.offsets))
 
     # Round 6: with a validation split present, keep the best epoch, not the last.
     va = None
     if (base / "windows_val.npz").exists():
         val = load_split(base, "val")
-        val_fa, val_fo = build_future_arrays(val, scenarios, horizon)
-        va = {
-            "actions": tensor(val["actions"], action_mean, action_std),
-            "observables": tensor(val["observables"], obs_mean, obs_std),
-            "future_actions": tensor(val_fa, action_mean, action_std),
-            "future_observables": tensor(val_fo, obs_mean, obs_std),
-        }
+        va = to_tensors(prepare(val, scenarios, horizon, offsets=args.offsets))
     best = BestCheckpoint()
 
     device = torch.device(args.device)
     model = RSSM(
         n_action=train["actions"].shape[-1], n_obs=train["observables"].shape[-1],
-        deter=DETER, stoch=STOCH, hidden=HIDDEN,
+        deter=DETER, stoch=STOCH, hidden=HIDDEN, anchored=args.anchored,
     ).to(device)
     n_params = sum(p.numel() for p in model.parameters())
     print(f"RSSM parameters: {n_params}", flush=True)
@@ -151,14 +138,15 @@ def main(argv=None) -> int:
             idx = perm[start:start + BATCH_SIZE]
             b = {k: v[idx].to(device) for k, v in tr.items()}
 
-            post = model.filter(b["actions"], b["observables"], sample=True)
+            anchor = (lambda key: b[key]) if args.anchored else (lambda key: None)
+            post = model.filter(b["actions"], b["observables"], sample=True, anchors=anchor("window_anchors"))
             recon_window = mse(post["recon"], b["observables"])
             kl = balanced_kl(
                 post["post_mu"], post["post_logvar"], post["prior_mu"], post["prior_logvar"],
                 alpha=KL_BALANCE, free_bits=FREE_BITS_PER_DAY,
             )
-            pred_factual = model.rollout(post["state"], b["future_actions"])
-            pred_cf = model.rollout(post["state"], b["cf_actions"])
+            pred_factual = model.rollout(post["state"], b["future_actions"], anchors=anchor("future_anchors"))
+            pred_cf = model.rollout(post["state"], b["cf_actions"], anchors=anchor("cf_anchors"))
             recon_f = mse(pred_factual, b["future_observables"])
             recon_cf = mse(pred_cf, b["cf_observables"])
             loss = recon_window + kl_weight_t * kl + recon_f + CF_LOSS_WEIGHT * recon_cf
@@ -197,7 +185,10 @@ def main(argv=None) -> int:
         future_actions = te["future_actions"].to(device)
         future_observables = te["future_observables"].to(device)
 
-        pred = model.rollout(model.abduct(actions, observables), future_actions)
+        pred = model.rollout(
+            model.abduct(actions, observables), future_actions,
+            anchors=te["future_anchors"].to(device) if args.anchored else None,
+        )
         model_mse = mse(pred, future_observables).item()
         persistence_pred = observables[:, -1, :].unsqueeze(1).expand_as(future_observables)
         persistence_mse = mse(persistence_pred, future_observables).item()
@@ -227,7 +218,7 @@ def main(argv=None) -> int:
 
     out = base / artifact("rssm", "world_model.pt")
     torch.save({
-        "state_dict": model.cpu().state_dict(), **model_config(model),
+        "state_dict": model.cpu().state_dict(), **model_config(model), "offsets": args.offsets,
         "action_mean": action_mean, "action_std": action_std,
         "obs_mean": obs_mean, "obs_std": obs_std,
         "rollout_horizon_days": horizon,
@@ -248,6 +239,7 @@ def main(argv=None) -> int:
             "kl_warmup_epochs": KL_WARMUP_EPOCHS, "rollout_horizon_days": horizon,
             "cf_loss_weight": CF_LOSS_WEIGHT, "batch_size": BATCH_SIZE, "lr": LR,
             "grad_clip": GRAD_CLIP, "seed": SEED,
+            "offsets": args.offsets, "anchored": args.anchored,
         },
     }, indent=2))
     print(f"wrote {results_path}")

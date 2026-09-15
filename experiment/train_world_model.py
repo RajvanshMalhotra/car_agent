@@ -83,6 +83,8 @@ from experiment.calendar_sim import ACTION_FEATURES, OBSERVABLE_FEATURES
 from experiment.checkpoints import BestCheckpoint, validation_rollout_mse
 from experiment.data import load_daily_trajectory
 from experiment.model import WorldModel, kl_free_bits
+from experiment.pipeline import fit_stats, prepare, standardize_prepared
+from experiment.representation import to_offsets
 
 KL_WEIGHT = 0.01
 FREE_BITS = 0.15
@@ -147,6 +149,10 @@ def main(argv=None) -> int:
     parser.add_argument("--dataset-dir", default="runs/experiment")
     parser.add_argument("--epochs", type=int, default=EPOCHS)
     parser.add_argument("--device", default="cpu")
+    parser.add_argument("--offsets", action="store_true",
+                        help="round 7: temperatures as offset above ambient")
+    parser.add_argument("--anchored", action="store_true",
+                        help="round 7: predict a correction to the same-day-type anchor")
     args = parser.parse_args(argv)
     base = Path(args.dataset_dir)
 
@@ -177,45 +183,37 @@ def main(argv=None) -> int:
     )
 
     scenarios, _order = load_daily_trajectory(base / "daily_trajectory.csv")
-    train_future_actions, train_future_obs = build_future_arrays(train, scenarios, horizon)
-    test_future_actions, test_future_obs = build_future_arrays(test, scenarios, horizon)
 
-    action_mean, action_std = _standardize_fit(train["actions"])
-    obs_mean, obs_std = _standardize_fit(train["observables"])
+    # Round 7: one shared path (experiment/pipeline.py) builds every array, so
+    # the representation trained on is the one every evaluation scores. With
+    # --offsets and --anchored both off, the arrays equal rounds 4-6's.
+    prep_train = prepare(train, scenarios, horizon, offsets=args.offsets, cf=train_cf)
+    action_mean, action_std, obs_mean, obs_std = fit_stats(prep_train)
 
-    def prep(
-        d: dict[str, np.ndarray], future_actions: np.ndarray, future_obs: np.ndarray,
-    ) -> dict[str, torch.Tensor]:
-        actions = _apply(d["actions"], action_mean, action_std)
-        observables = _apply(d["observables"], obs_mean, obs_std)
-        next_action = _apply(d["next_action"], action_mean, action_std)
-        next_observable = _apply(d["next_observable"], obs_mean, obs_std)
-        fut_actions = _apply(future_actions, action_mean, action_std)
-        fut_obs = _apply(future_obs, obs_mean, obs_std)
-        return {
-            "actions": torch.tensor(actions, dtype=torch.float32),
-            "observables": torch.tensor(observables, dtype=torch.float32),
-            "next_action": torch.tensor(next_action, dtype=torch.float32),
-            "next_observable": torch.tensor(next_observable, dtype=torch.float32),
-            "future_actions": torch.tensor(fut_actions, dtype=torch.float32),
-            "future_observables": torch.tensor(fut_obs, dtype=torch.float32),
-        }
+    def to_tensors(prepared: dict[str, np.ndarray], split: dict[str, np.ndarray]) -> dict[str, torch.Tensor]:
+        next_action = split["next_action"][:, None, :]
+        next_observable = split["next_observable"][:, None, :]
+        if args.offsets:
+            next_observable = to_offsets(next_observable, next_action)
+        # next_action is standardized with the action stats on the line below;
+        # passing it through here would use the observable stats.
+        std = standardize_prepared(
+            {**prepared, "next_observable": next_observable},
+            action_mean, action_std, obs_mean, obs_std,
+        )
+        std["next_action"] = ((split["next_action"] - action_mean) / action_std).astype(np.float32)
+        std["next_observable"] = std["next_observable"][:, 0, :]
+        return {key: torch.tensor(value) for key, value in std.items()}
 
-    train_t = prep(train, train_future_actions, train_future_obs)
-    test_t = prep(test, test_future_actions, test_future_obs)
+    train_t = to_tensors(prep_train, train)
+    test_t = to_tensors(prepare(test, scenarios, horizon, offsets=args.offsets), test)
 
     # Round 6: with a validation split present, keep the best epoch, not the last.
     val_t = None
     if (base / "windows_val.npz").exists():
         val = load_split(base, "val")
-        val_t = prep(val, *build_future_arrays(val, scenarios, horizon))
+        val_t = to_tensors(prepare(val, scenarios, horizon, offsets=args.offsets), val)
     best = BestCheckpoint()
-    train_t["cf_actions"] = torch.tensor(
-        _apply(train_cf["cf_actions"], action_mean, action_std), dtype=torch.float32,
-    )
-    train_t["cf_observables"] = torch.tensor(
-        _apply(train_cf["cf_observables"], obs_mean, obs_std), dtype=torch.float32,
-    )
 
     n_action = train["actions"].shape[-1]
     n_obs = train["observables"].shape[-1]
@@ -223,7 +221,7 @@ def main(argv=None) -> int:
 
     model = WorldModel(
         n_action=n_action, n_obs=n_obs, enc_hidden=ENC_HIDDEN,
-        latent_dim=LATENT_DIM, dec_hidden=DEC_HIDDEN,
+        latent_dim=LATENT_DIM, dec_hidden=DEC_HIDDEN, anchored=args.anchored,
     ).to(device)
     n_params = sum(p.numel() for p in model.parameters())
     optimizer = torch.optim.Adam(model.parameters(), lr=LR)
@@ -255,8 +253,10 @@ def main(argv=None) -> int:
             mu, logvar = model.encode(actions, observables)
             z = model.reparameterize(mu, logvar)
             prev_obs0 = observables[:, -1, :]
-            pred_factual = model.rollout(z, future_actions, prev_obs0)
-            pred_cf = model.rollout(z, cf_actions, prev_obs0)
+            anchors_f = train_t["future_anchors"][idx].to(device) if args.anchored else None
+            anchors_cf = train_t["cf_anchors"][idx].to(device) if args.anchored else None
+            pred_factual = model.rollout(z, future_actions, prev_obs0, anchors=anchors_f)
+            pred_cf = model.rollout(z, cf_actions, prev_obs0, anchors=anchors_cf)
 
             recon_f = mse(pred_factual, future_observables)
             recon_cf = mse(pred_cf, cf_observables)
@@ -302,6 +302,7 @@ def main(argv=None) -> int:
 
         pred, mu, logvar = model.encode_and_rollout(
             actions, observables, future_actions, sample=False,
+            anchors=test_t["future_anchors"].to(device) if args.anchored else None,
         )
         model_mse = mse(pred, future_observables).item()
 
@@ -362,6 +363,7 @@ def main(argv=None) -> int:
         "obs_mean": obs_mean, "obs_std": obs_std,
         "rollout_horizon_days": horizon,
         "kl_scheme": {"free_bits": FREE_BITS, "kl_weight": KL_WEIGHT, "warmup_epochs": KL_WARMUP_EPOCHS},
+        "offsets": args.offsets, "anchored": args.anchored,
     }, out)
     print(f"\nwrote {out}")
 
@@ -377,6 +379,7 @@ def main(argv=None) -> int:
             "free_bits": FREE_BITS, "kl_warmup_epochs": KL_WARMUP_EPOCHS,
             "rollout_horizon_days": horizon, "cf_loss_weight": CF_LOSS_WEIGHT,
             "batch_size": BATCH_SIZE, "lr": LR, "seed": SEED,
+            "offsets": args.offsets, "anchored": args.anchored,
         },
     }, indent=2))
     print(f"wrote {base / 'gate2_results.json'}")

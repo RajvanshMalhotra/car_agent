@@ -43,13 +43,15 @@ from torch import nn
 class WorldModel(nn.Module):
     def __init__(
         self, n_action: int, n_obs: int, enc_hidden: int = 32,
-        latent_dim: int = 8, dec_hidden: int = 32,
+        latent_dim: int = 8, dec_hidden: int = 32, anchored: bool = False,
     ) -> None:
         super().__init__()
         self.n_action = n_action
         self.n_obs = n_obs
         self.latent_dim = latent_dim
         self.dec_hidden = dec_hidden
+        #: Round 7: predict `anchor + correction` (see experiment/representation.py).
+        self.anchored = anchored
 
         self.encoder = nn.GRU(
             input_size=n_action + n_obs, hidden_size=enc_hidden, batch_first=True,
@@ -58,6 +60,10 @@ class WorldModel(nn.Module):
         self.z2h = nn.Linear(latent_dim, dec_hidden)
         self.dec_cell = nn.GRUCell(latent_dim + n_action + n_obs, dec_hidden)
         self.out = nn.Linear(dec_hidden, n_obs)
+        if anchored:
+            # Start exactly at the anchor baseline; training can only add a correction.
+            nn.init.zeros_(self.out.weight)
+            nn.init.zeros_(self.out.bias)
 
     def encode(self, actions: torch.Tensor, observables: torch.Tensor):
         """(actions, observables): [B, L, n_action], [B, L, n_obs] -> mu, logvar [B, latent_dim]."""
@@ -83,7 +89,7 @@ class WorldModel(nn.Module):
 
     def sample_rollouts(
         self, actions: torch.Tensor, observables: torch.Tensor,
-        future_actions: torch.Tensor, n: int,
+        future_actions: torch.Tensor, n: int, anchors: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """`n` futures per window, each from one posterior draw of `z`.
 
@@ -93,7 +99,10 @@ class WorldModel(nn.Module):
         batch = actions.shape[0]
         mu, logvar = self.encode(actions, observables)
         z = self.reparameterize(mu.repeat(n, 1), logvar.repeat(n, 1))
-        pred = self.rollout(z, future_actions.repeat(n, 1, 1), observables[:, -1, :].repeat(n, 1))
+        pred = self.rollout(
+            z, future_actions.repeat(n, 1, 1), observables[:, -1, :].repeat(n, 1),
+            anchors=None if anchors is None else anchors.repeat(n, 1, 1),
+        )
         return pred.view(n, batch, *pred.shape[1:])
 
     @staticmethod
@@ -116,6 +125,7 @@ class WorldModel(nn.Module):
 
     def rollout(
         self, z: torch.Tensor, action_seq: torch.Tensor, prev_obs0: torch.Tensor,
+        anchors: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Closed-loop multi-day rollout under a GIVEN action sequence.
 
@@ -133,6 +143,9 @@ class WorldModel(nn.Module):
         outputs = []
         for t in range(horizon):
             obs_t, h = self.decode_step(z, action_seq[:, t, :], prev_obs, h)
+            if anchors is not None:
+                # The anchored prediction, not the raw correction, is what feeds back.
+                obs_t = anchors[:, t, :] + obs_t
             outputs.append(obs_t)
             prev_obs = obs_t
         return torch.stack(outputs, dim=1)
@@ -140,6 +153,7 @@ class WorldModel(nn.Module):
     def encode_and_rollout(
         self, actions: torch.Tensor, observables: torch.Tensor,
         future_actions: torch.Tensor, sample: bool = True,
+        anchors: torch.Tensor | None = None,
     ):
         """Encode the window, then CLOSED-LOOP roll out over `future_actions`.
 
@@ -151,7 +165,7 @@ class WorldModel(nn.Module):
         mu, logvar = self.encode(actions, observables)
         z = self.reparameterize(mu, logvar) if sample else mu
         prev_obs0 = observables[:, -1, :]
-        predicted = self.rollout(z, future_actions, prev_obs0)
+        predicted = self.rollout(z, future_actions, prev_obs0, anchors=anchors)
         return predicted, mu, logvar
 
     def forward(

@@ -77,7 +77,7 @@ def _mlp(n_in: int, hidden: int, n_out: int) -> nn.Sequential:
 class RSSM(nn.Module):
     def __init__(
         self, n_action: int, n_obs: int, deter: int = 36, stoch: int = 8,
-        hidden: int = 32,
+        hidden: int = 32, anchored: bool = False,
     ) -> None:
         super().__init__()
         self.n_action = n_action
@@ -86,11 +86,17 @@ class RSSM(nn.Module):
         self.stoch = stoch
         self.hidden = hidden
         self.state_dim = deter + stoch
+        #: Round 7: decode `anchor + correction` (see experiment/representation.py).
+        self.anchored = anchored
 
         self.cell = nn.GRUCell(stoch + n_action, deter)
         self.prior_head = _mlp(deter, hidden, 2 * stoch)
         self.post_head = _mlp(deter + n_obs, hidden, 2 * stoch)
         self.decoder = _mlp(deter + stoch, hidden, n_obs)
+        if anchored:
+            # Start exactly at the anchor baseline; training can only add a correction.
+            nn.init.zeros_(self.decoder[-1].weight)
+            nn.init.zeros_(self.decoder[-1].bias)
 
     @staticmethod
     def _split(stats: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
@@ -110,6 +116,7 @@ class RSSM(nn.Module):
 
     def filter(
         self, actions: torch.Tensor, observables: torch.Tensor, sample: bool = True,
+        anchors: torch.Tensor | None = None,
     ) -> dict[str, torch.Tensor]:
         """Run the posterior over a window. `[B, L, *]` in, per-day tensors out.
 
@@ -130,7 +137,8 @@ class RSSM(nn.Module):
             prior_logvar.append(p_logvar)
             post_mu.append(q_mu)
             post_logvar.append(q_logvar)
-            recon.append(self.decoder(torch.cat([h, s], dim=-1)))
+            decoded = self.decoder(torch.cat([h, s], dim=-1))
+            recon.append(decoded if anchors is None else anchors[:, t, :] + decoded)
         return {
             "prior_mu": torch.stack(prior_mu, dim=1),
             "prior_logvar": torch.stack(prior_logvar, dim=1),
@@ -152,6 +160,7 @@ class RSSM(nn.Module):
     def rollout(
         self, state: torch.Tensor, action_seq: torch.Tensor,
         prev_obs0: torch.Tensor | None = None, sample: bool = False,
+        anchors: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Imagine `K` days from `state` under `action_seq` `[B, K, n_action]`.
 
@@ -165,12 +174,13 @@ class RSSM(nn.Module):
             h = self.cell(torch.cat([s, action_seq[:, t, :]], dim=-1), h)
             mu, logvar = self._split(self.prior_head(h))
             s = self._draw(mu, logvar, sample)
-            outputs.append(self.decoder(torch.cat([h, s], dim=-1)))
+            decoded = self.decoder(torch.cat([h, s], dim=-1))
+            outputs.append(decoded if anchors is None else anchors[:, t, :] + decoded)
         return torch.stack(outputs, dim=1)
 
     def sample_rollouts(
         self, actions: torch.Tensor, observables: torch.Tensor,
-        future_actions: torch.Tensor, n: int,
+        future_actions: torch.Tensor, n: int, anchors: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """`n` stochastic futures per window: sampled filtering, sampled imagination.
 
@@ -178,5 +188,8 @@ class RSSM(nn.Module):
         """
         batch = actions.shape[0]
         post = self.filter(actions.repeat(n, 1, 1), observables.repeat(n, 1, 1), sample=True)
-        pred = self.rollout(post["state"], future_actions.repeat(n, 1, 1), sample=True)
+        pred = self.rollout(
+            post["state"], future_actions.repeat(n, 1, 1), sample=True,
+            anchors=None if anchors is None else anchors.repeat(n, 1, 1),
+        )
         return pred.view(n, batch, *pred.shape[1:])

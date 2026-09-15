@@ -32,11 +32,12 @@ def model_config(model: nn.Module) -> dict:
         return {
             "arch": "rssm", "n_action": model.n_action, "n_obs": model.n_obs,
             "deter": model.deter, "stoch": model.stoch, "hidden": model.hidden,
+            "anchored": model.anchored,
         }
     return {
         "arch": "gru_vae", "n_action": model.n_action, "n_obs": model.n_obs,
         "enc_hidden": model.encoder.hidden_size, "latent_dim": model.latent_dim,
-        "dec_hidden": model.dec_hidden,
+        "dec_hidden": model.dec_hidden, "anchored": model.anchored,
     }
 
 
@@ -46,12 +47,13 @@ def build_model(checkpoint: dict) -> nn.Module:
         model = RSSM(
             n_action=checkpoint["n_action"], n_obs=checkpoint["n_obs"],
             deter=checkpoint["deter"], stoch=checkpoint["stoch"], hidden=checkpoint["hidden"],
+            anchored=checkpoint.get("anchored", False),
         )
     else:
         model = WorldModel(
             n_action=checkpoint["n_action"], n_obs=checkpoint["n_obs"],
             enc_hidden=checkpoint["enc_hidden"], latent_dim=checkpoint["latent_dim"],
-            dec_hidden=checkpoint["dec_hidden"],
+            dec_hidden=checkpoint["dec_hidden"], anchored=checkpoint.get("anchored", False),
         )
     model.load_state_dict(checkpoint["state_dict"])
     return model.eval()
@@ -92,7 +94,12 @@ def validation_rollout_mse(model: nn.Module, split: dict, device) -> float:
     with torch.no_grad():
         observables = split["observables"].to(device)
         state = model.abduct(split["actions"].to(device), observables)
-        pred = model.rollout(state, split["future_actions"].to(device), observables[:, -1, :])
+        # Prepared splits always carry anchors; only an anchored model may use them.
+        anchors = split.get("future_anchors") if getattr(model, "anchored", False) else None
+        pred = model.rollout(
+            state, split["future_actions"].to(device), observables[:, -1, :],
+            anchors=None if anchors is None else anchors.to(device),
+        )
         return float(((pred - split["future_observables"].to(device)) ** 2).mean())
 
 
