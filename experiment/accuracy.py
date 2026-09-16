@@ -34,7 +34,7 @@ import numpy as np
 import torch
 
 from experiment.calendar_sim import OBSERVABLE_FEATURES
-from experiment.checkpoints import ARCHS, artifact, load_model
+from experiment.checkpoints import ARCHS, artifact, load_model, rollout_kwargs
 from experiment.data import load_daily_trajectory
 from experiment.pipeline import prepare, real_units, standardize_prepared
 from experiment.representation import from_offsets
@@ -118,10 +118,14 @@ def main(argv=None) -> int:
 
     std = standardize_prepared(prepared, ck["action_mean"], ck["action_std"], ck["obs_mean"], ck["obs_std"])
     with torch.no_grad():
+        actions = torch.tensor(std["actions"])
         observables = torch.tensor(std["observables"])
-        state = model.abduct(torch.tensor(std["actions"]), observables)
+        state = model.abduct(actions, observables)
         anchors = torch.tensor(std[anchor_key]) if getattr(model, "anchored", False) else None
-        pred_std = model.rollout(state, torch.tensor(std[act_key]), observables[:, -1, :], anchors=anchors).numpy()
+        pred_std = model.rollout(
+            state, torch.tensor(std[act_key]), observables[:, -1, :], anchors=anchors,
+            **rollout_kwargs(model, actions, observables),
+        ).numpy()
     pred = real_units(pred_std, prepared[act_key], ck["obs_mean"], ck["obs_std"], offsets=offsets)
     baseline = prepared[anchor_key]
     if offsets:

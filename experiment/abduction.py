@@ -264,7 +264,7 @@ def main(argv=None) -> int:
 
     # Imported here, not at module level: checkpoints imports this package's
     # models, and gate2b/sae_probe import helpers from this module.
-    from experiment.checkpoints import artifact, load_model
+    from experiment.checkpoints import artifact, load_model, rollout_kwargs
     model, checkpoint = load_model(base, args.arch)
     action_mean, action_std = checkpoint["action_mean"], checkpoint["action_std"]
     obs_mean, obs_std = checkpoint["obs_mean"], checkpoint["obs_std"]
@@ -334,11 +334,16 @@ def main(argv=None) -> int:
                 standardize(cf_actions_raw, action_mean, action_std),
             ).unsqueeze(0)
 
-            pred_factual = model.rollout(mu, factual_actions_t, prev_obs0)
-            pred_cf_abducted = model.rollout(mu, cf_actions_t, prev_obs0)
-            pred_cf_lastday = model.rollout(lastday_mu, cf_actions_t, prev_obs0)
+            # The last-day control keeps its own flattened window: erasing path
+            # dependence has to erase it from the anchor too, or the control
+            # would still see the real history through an attention anchor.
+            window = rollout_kwargs(model, win_actions_t, win_obs_t)
+            lastday_window = rollout_kwargs(model, lastday_actions_t, lastday_obs_t)
+            pred_factual = model.rollout(mu, factual_actions_t, prev_obs0, **window)
+            pred_cf_abducted = model.rollout(mu, cf_actions_t, prev_obs0, **window)
+            pred_cf_lastday = model.rollout(lastday_mu, cf_actions_t, prev_obs0, **lastday_window)
             zero_latent = model.zero_state(1)
-            pred_cf_interventional = model.rollout(zero_latent, cf_actions_t, prev_obs0)
+            pred_cf_interventional = model.rollout(zero_latent, cf_actions_t, prev_obs0, **window)
 
         true_factual_std = standardize(true_factual_obs_raw, obs_mean, obs_std)
         true_cf_std = standardize(true_cf_obs_raw, obs_mean, obs_std)

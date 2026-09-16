@@ -52,7 +52,7 @@ import numpy as np
 import torch
 
 from experiment.abduction import standardize
-from experiment.checkpoints import ARCHS, artifact, load_model
+from experiment.checkpoints import ARCHS, artifact, load_model, rollout_kwargs
 from experiment.data import load_daily_trajectory
 from experiment.train_world_model import build_future_arrays
 
@@ -146,8 +146,10 @@ def part_b_decoder_uses_latent(
         state = model.abduct(actions, observables)
         prev_obs0 = observables[:, -1, :]
 
-        pred_true_latent = model.rollout(state, future_actions, prev_obs0)
-        pred_zero_latent = model.rollout(model.zero_state(state.shape[0]), future_actions, prev_obs0)
+        window = rollout_kwargs(model, actions, observables)
+        pred_true_latent = model.rollout(state, future_actions, prev_obs0, **window)
+        pred_zero_latent = model.rollout(
+            model.zero_state(state.shape[0]), future_actions, prev_obs0, **window)
 
         true_latent_mse = float(((pred_true_latent - future_observables) ** 2).mean())
         zero_latent_mse = float(((pred_zero_latent - future_observables) ** 2).mean())

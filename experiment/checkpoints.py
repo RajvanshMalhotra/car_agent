@@ -88,6 +88,19 @@ class BestCheckpoint:
             model.load_state_dict(self._state)
 
 
+def rollout_kwargs(model: nn.Module, window_actions, window_observables) -> dict:
+    """The extra `rollout` arguments THIS model needs, or nothing.
+
+    Round 10's attention anchor picks its anchor from the observed window, so
+    it needs that window at rollout time; every other model does not. Callers
+    use this instead of each deciding for themselves -- experiment/accuracy.py
+    once did and silently could not score a finished attention model.
+    """
+    if getattr(model, "attn_anchor", False):
+        return {"window_actions": window_actions, "window_observables": window_observables}
+    return {}
+
+
 def validation_rollout_mse(model: nn.Module, split: dict, device) -> float:
     """Posterior-mean abduction, deterministic 30-day rollout, factual continuation.
 
@@ -101,12 +114,10 @@ def validation_rollout_mse(model: nn.Module, split: dict, device) -> float:
         state = model.abduct(split["actions"].to(device), observables)
         # Prepared splits always carry anchors; only an anchored model may use them.
         anchors = split.get("future_anchors") if getattr(model, "anchored", False) else None
-        attends = getattr(model, "attn_anchor", False)
-        window_actions = split["actions"].to(device)
         pred = model.rollout(
             state, split["future_actions"].to(device), observables[:, -1, :],
             anchors=None if anchors is None else anchors.to(device),
-            **({"window_actions": window_actions, "window_observables": observables} if attends else {}),
+            **rollout_kwargs(model, split["actions"].to(device), observables),
         )
         return float(((pred - split["future_observables"].to(device)) ** 2).mean())
 
