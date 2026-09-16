@@ -85,11 +85,13 @@ def main(argv=None) -> int:
                         help="round 8: project the anchor into every decoder hidden layer")
     parser.add_argument("--attn-anchor", action="store_true",
                         help="round 10: pick the anchor by attention over the observed window")
+    parser.add_argument("--seed", type=int, default=SEED,
+                        help="round 11: vary for multi-seed runs; default reproduces rounds 5-10")
     args = parser.parse_args(argv)
     base = Path(args.dataset_dir)
 
-    torch.manual_seed(SEED)
-    np.random.seed(SEED)
+    torch.manual_seed(args.seed)
+    np.random.seed(args.seed)
 
     horizon = json.loads((base / "windows_meta.json").read_text())["rollout_k"]
     train = load_split(base, "train")
@@ -133,7 +135,7 @@ def main(argv=None) -> int:
     mse = nn.MSELoss()
 
     n_train = tr["actions"].shape[0]
-    rng = np.random.default_rng(SEED)
+    rng = np.random.default_rng(args.seed)
     history = []
 
     for epoch in range(args.epochs):
@@ -252,7 +254,7 @@ def main(argv=None) -> int:
             "free_bits_per_day": FREE_BITS_PER_DAY, "kl_balance": KL_BALANCE,
             "kl_warmup_epochs": KL_WARMUP_EPOCHS, "rollout_horizon_days": horizon,
             "cf_loss_weight": CF_LOSS_WEIGHT, "batch_size": BATCH_SIZE, "lr": LR,
-            "grad_clip": GRAD_CLIP, "seed": SEED,
+            "grad_clip": GRAD_CLIP, "seed": args.seed,
             "offsets": args.offsets, "anchored": args.anchored,
             "decoder_layers": args.decoder_layers, "anchor_skip": args.anchor_skip,
             "attn_anchor": args.attn_anchor,
