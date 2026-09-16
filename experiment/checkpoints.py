@@ -34,6 +34,7 @@ def model_config(model: nn.Module) -> dict:
             "deter": model.deter, "stoch": model.stoch, "hidden": model.hidden,
             "anchored": model.anchored,
             "decoder_layers": model.decoder_layers, "anchor_skip": model.anchor_skip,
+            "attn_anchor": model.attn_anchor,
         }
     return {
         "arch": "gru_vae", "n_action": model.n_action, "n_obs": model.n_obs,
@@ -51,6 +52,7 @@ def build_model(checkpoint: dict) -> nn.Module:
             anchored=checkpoint.get("anchored", False),
             decoder_layers=checkpoint.get("decoder_layers", 1),
             anchor_skip=checkpoint.get("anchor_skip", False),
+            attn_anchor=checkpoint.get("attn_anchor", False),
         )
     else:
         model = WorldModel(
@@ -99,9 +101,12 @@ def validation_rollout_mse(model: nn.Module, split: dict, device) -> float:
         state = model.abduct(split["actions"].to(device), observables)
         # Prepared splits always carry anchors; only an anchored model may use them.
         anchors = split.get("future_anchors") if getattr(model, "anchored", False) else None
+        attends = getattr(model, "attn_anchor", False)
+        window_actions = split["actions"].to(device)
         pred = model.rollout(
             state, split["future_actions"].to(device), observables[:, -1, :],
             anchors=None if anchors is None else anchors.to(device),
+            **({"window_actions": window_actions, "window_observables": observables} if attends else {}),
         )
         return float(((pred - split["future_observables"].to(device)) ** 2).mean())
 

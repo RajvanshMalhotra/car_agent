@@ -27,12 +27,14 @@ For predicted day `t`:
     key_i    = W_k [action_i]                         (window day i's schedule)
     score_i  = query . key / sqrt(d)
              + beta  * 1[type_i == type_t]            type-match bonus
-             + gamma * i / (L - 1)                    recency bonus
+             - gamma * (L - 1 - i)                    recency penalty, per day ago
     a        = softmax(score)                         (masked; see below)
     anchor_t = sum_i a_i * observable_i               convex combination
     pred_t   = anchor_t + head(decoder([h_t, s_t]))   head zero-initialised
 
-`beta` (init 20) and `gamma` (init 60) are learnable scalars, and `W_q`,
+`beta` (init 20) and `gamma` (init 2, per day ago -- deliberately NOT scaled
+by window length, so a wrong-type day always costs more than an older
+same-type day) are learnable scalars, and `W_q`,
 `W_k` are zero-initialised. So an untrained model puts almost all weight on
 the latest same-type day -- round 7's anchor -- and, with the zero head,
 reproduces round 7's starting point. Training can only refine which days get

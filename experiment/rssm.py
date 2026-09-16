@@ -35,6 +35,8 @@ from __future__ import annotations
 import torch
 from torch import nn
 
+from experiment.attention import AttentionAnchor
+
 #: Keeps a freshly initialised or badly trained head from producing an
 #: exp(logvar) that overflows or underflows in the KL.
 LOGVAR_MIN, LOGVAR_MAX = -8.0, 4.0
@@ -78,17 +80,22 @@ class RSSM(nn.Module):
     def __init__(
         self, n_action: int, n_obs: int, deter: int = 36, stoch: int = 8,
         hidden: int = 32, anchored: bool = False,
-        decoder_layers: int = 1, anchor_skip: bool = False,
+        decoder_layers: int = 1, anchor_skip: bool = False, attn_anchor: bool = False,
     ) -> None:
         super().__init__()
         if anchor_skip and not anchored:
             raise ValueError("anchor_skip injects the anchor, so it requires anchored=True")
+        if attn_anchor and not anchored:
+            raise ValueError("attn_anchor picks the anchor, so it requires anchored=True")
         if decoder_layers < 1:
             raise ValueError("decoder_layers must be at least 1")
         #: Round 8: decoder depth, and residual skips projecting the anchor into
         #: every hidden layer. The defaults are the round 5-7 decoder exactly.
         self.decoder_layers = decoder_layers
         self.anchor_skip = anchor_skip
+        #: Round 10: the anchor is attention over the observed window
+        #: (experiment/attention.py), not the fixed same-day-type rule.
+        self.attn_anchor = attn_anchor
         self.n_action = n_action
         self.n_obs = n_obs
         self.deter = deter
@@ -111,6 +118,8 @@ class RSSM(nn.Module):
             if anchor_skip:
                 self.dec_skips = nn.ModuleList(nn.Linear(n_obs, hidden) for _ in range(decoder_layers))
             self.dec_head = nn.Linear(hidden, n_obs)
+        if attn_anchor:
+            self.attn = AttentionAnchor(n_action=n_action, n_obs=n_obs, deter=deter)
         if anchored:
             # Start exactly at the anchor baseline; training can only add a correction.
             nn.init.zeros_(self.decoder_head.weight)
@@ -169,6 +178,8 @@ class RSSM(nn.Module):
         belief `state` `[B, state_dim]`.
         """
         batch, days, _ = actions.shape
+        if self.attn_anchor and anchors is None:
+            anchors = "attend"  # computed per day below, causally
         state = self.zero_state(batch)
         h, s = state[:, :self.deter], state[:, self.deter:]
         prior_mu, prior_logvar, post_mu, post_logvar, recon = [], [], [], [], []
@@ -181,7 +192,15 @@ class RSSM(nn.Module):
             prior_logvar.append(p_logvar)
             post_mu.append(q_mu)
             post_logvar.append(q_logvar)
-            if not (self.anchor_skip and anchors is None):
+            if isinstance(anchors, str):
+                # Attention anchor, causal: day t may only copy days before it.
+                upto = max(t, 1)
+                anchor_t = self.attn(
+                    actions[:, :upto, :], observables[:, :upto, :],
+                    h.unsqueeze(1), actions[:, t:t + 1, :],
+                )[:, 0, :]
+                recon.append(self._decode(h, s, anchor_t))
+            elif not (self.anchor_skip and anchors is None):
                 # Abduction filters without anchors; the belief never depends on the
                 # reconstruction, so a skip decoder simply has none to produce.
                 recon.append(self._decode(h, s, None if anchors is None else anchors[:, t, :]))
@@ -207,6 +226,8 @@ class RSSM(nn.Module):
         self, state: torch.Tensor, action_seq: torch.Tensor,
         prev_obs0: torch.Tensor | None = None, sample: bool = False,
         anchors: torch.Tensor | None = None,
+        window_actions: torch.Tensor | None = None,
+        window_observables: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Imagine `K` days from `state` under `action_seq` `[B, K, n_action]`.
 
@@ -214,13 +235,23 @@ class RSSM(nn.Module):
         prediction; `sample=True` draws each day's `s_t` instead.
         `prev_obs0` is accepted for protocol parity with WorldModel and unused.
         """
+        if self.attn_anchor:
+            if window_actions is None or window_observables is None:
+                raise ValueError("an attn_anchor rollout needs the observed window")
+            anchors = None  # picked per day below
         h, s = state[:, :self.deter], state[:, self.deter:]
         outputs = []
         for t in range(action_seq.shape[1]):
             h = self.cell(torch.cat([s, action_seq[:, t, :]], dim=-1), h)
             mu, logvar = self._split(self.prior_head(h))
             s = self._draw(mu, logvar, sample)
-            outputs.append(self._decode(h, s, None if anchors is None else anchors[:, t, :]))
+            if self.attn_anchor:
+                anchor_t = self.attn(
+                    window_actions, window_observables, h.unsqueeze(1), action_seq[:, t:t + 1, :],
+                )[:, 0, :]
+            else:
+                anchor_t = None if anchors is None else anchors[:, t, :]
+            outputs.append(self._decode(h, s, anchor_t))
         return torch.stack(outputs, dim=1)
 
     def sample_rollouts(
@@ -232,9 +263,12 @@ class RSSM(nn.Module):
         Returns `[n, B, K, n_obs]`.
         """
         batch = actions.shape[0]
-        post = self.filter(actions.repeat(n, 1, 1), observables.repeat(n, 1, 1), sample=True)
+        window_a, window_o = actions.repeat(n, 1, 1), observables.repeat(n, 1, 1)
+        post = self.filter(window_a, window_o, sample=True)
         pred = self.rollout(
             post["state"], future_actions.repeat(n, 1, 1), sample=True,
             anchors=None if anchors is None else anchors.repeat(n, 1, 1),
+            window_actions=window_a if self.attn_anchor else None,
+            window_observables=window_o if self.attn_anchor else None,
         )
         return pred.view(n, batch, *pred.shape[1:])

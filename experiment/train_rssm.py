@@ -83,6 +83,8 @@ def main(argv=None) -> int:
                         help="round 8: hidden layers in the decoder (1 = rounds 5-7)")
     parser.add_argument("--anchor-skip", action="store_true",
                         help="round 8: project the anchor into every decoder hidden layer")
+    parser.add_argument("--attn-anchor", action="store_true",
+                        help="round 10: pick the anchor by attention over the observed window")
     args = parser.parse_args(argv)
     base = Path(args.dataset_dir)
 
@@ -123,6 +125,7 @@ def main(argv=None) -> int:
         n_action=train["actions"].shape[-1], n_obs=train["observables"].shape[-1],
         deter=DETER, stoch=STOCH, hidden=HIDDEN, anchored=args.anchored,
         decoder_layers=args.decoder_layers, anchor_skip=args.anchor_skip,
+        attn_anchor=args.attn_anchor,
     ).to(device)
     n_params = sum(p.numel() for p in model.parameters())
     print(f"RSSM parameters: {n_params}", flush=True)
@@ -150,8 +153,12 @@ def main(argv=None) -> int:
                 post["post_mu"], post["post_logvar"], post["prior_mu"], post["prior_logvar"],
                 alpha=KL_BALANCE, free_bits=FREE_BITS_PER_DAY,
             )
-            pred_factual = model.rollout(post["state"], b["future_actions"], anchors=anchor("future_anchors"))
-            pred_cf = model.rollout(post["state"], b["cf_actions"], anchors=anchor("cf_anchors"))
+            window = ({"window_actions": b["actions"], "window_observables": b["observables"]}
+                      if args.attn_anchor else {})
+            pred_factual = model.rollout(
+                post["state"], b["future_actions"], anchors=anchor("future_anchors"), **window)
+            pred_cf = model.rollout(
+                post["state"], b["cf_actions"], anchors=anchor("cf_anchors"), **window)
             recon_f = mse(pred_factual, b["future_observables"])
             recon_cf = mse(pred_cf, b["cf_observables"])
             loss = recon_window + kl_weight_t * kl + recon_f + CF_LOSS_WEIGHT * recon_cf
@@ -193,6 +200,8 @@ def main(argv=None) -> int:
         pred = model.rollout(
             model.abduct(actions, observables), future_actions,
             anchors=te["future_anchors"].to(device) if args.anchored else None,
+            **({"window_actions": actions, "window_observables": observables}
+               if args.attn_anchor else {}),
         )
         model_mse = mse(pred, future_observables).item()
         persistence_pred = observables[:, -1, :].unsqueeze(1).expand_as(future_observables)
@@ -246,6 +255,7 @@ def main(argv=None) -> int:
             "grad_clip": GRAD_CLIP, "seed": SEED,
             "offsets": args.offsets, "anchored": args.anchored,
             "decoder_layers": args.decoder_layers, "anchor_skip": args.anchor_skip,
+            "attn_anchor": args.attn_anchor,
         },
     }, indent=2))
     print(f"wrote {results_path}")
