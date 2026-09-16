@@ -165,8 +165,14 @@ def planned_counterfactual(
 
 def planned_ground_truth(
     scenario_meta: dict, driving_raw, arr: dict, end: int, plans: list, rates: AgingRates,
-) -> np.ndarray:
-    """Rerun the ODE from the TRUE hidden state at `end`, under `plans`."""
+    return_rows: bool = False,
+):
+    """Rerun the ODE from the TRUE hidden state at `end`, under `plans`.
+
+    Returns the `[K, n_obs]` observable array, or the raw per-day row dicts
+    when `return_rows` is set -- the planner needs the action columns too, to
+    work out how many hours each day actually integrated.
+    """
     from experiment.calendar_sim import roll_planned_days
 
     aging = AgingState(
@@ -190,6 +196,8 @@ def planned_ground_truth(
     rows = roll_planned_days(
         state, scenario, driving_raw, rates, plans, SOAK_H, last_coolant_c,
     )
+    if return_rows:
+        return rows
     return np.array(
         [[row[f] for f in OBSERVABLE_FEATURES] for row in rows], dtype=np.float32,
     )

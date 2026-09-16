@@ -1,0 +1,22 @@
+  step   0  predicted damage 2.556342e-03
+  step  50  predicted damage 1.896221e-03
+  step 100  predicted damage 1.741239e-03
+  step 150  predicted damage 1.722704e-03
+  step 200  predicted damage 1.715455e-03
+  step 249  predicted damage 1.711741e-03
+/Users/rajvanshmalhotra/car_agent/.claude/worktrees/battery-load-and-cell/experiment/planner.py:268: UserWarning: Converting a tensor with requires_grad=True to a scalar may lead to unexpected behavior.
+Consider using tensor.detach() first. (Triggered internally at /Users/runner/work/pytorch/pytorch/pytorch/torch/csrc/autograd/generated/python_variable_methods.cpp:837.)
+  "planned_minutes_per_trip": float(_bounded(minutes_raw, *TRIP_MINUTES_RANGE)[idx].mean()),
+  verified 20/100
+  verified 40/100
+  verified 60/100
+  verified 80/100
+  verified 100/100
+
+PLANNED SCHEDULES, 100 batteries
+  model promised damage x 0.565 of the driver's own schedule
+  simulator delivered   x 0.995
+  schedules that really were gentler: 86%
+  median change in habits: trips 1.50 -> 1.01, minutes/trip 10.1 -> 10.3, accessory 42 -> 23 A
+
+wrote runs/experiment_planned/rssm_planner_results.json
