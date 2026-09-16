@@ -70,7 +70,13 @@ def _cf_truth(base: Path, test: dict, scenarios: dict, horizon: int, trajectory:
         if np.array_equal(cached["scenario"], test["scenario"]) and np.array_equal(cached["end_day"], test["end_day"]):
             return cached
     from cell.aging import AgingRates
-    from experiment.abduction import build_counterfactual_actions, ground_truth_counterfactual
+    from experiment.abduction import (
+        SOAK_H,
+        build_counterfactual_actions,
+        ground_truth_counterfactual,
+        planned_counterfactual,
+        planned_ground_truth,
+    )
     from sweep_dataset import load_driving
 
     meta = {s["scenario"]: s for s in json.loads((base / "scenarios.json").read_text())}
@@ -78,10 +84,17 @@ def _cf_truth(base: Path, test: dict, scenarios: dict, horizon: int, trajectory:
     n = test["scenario"].shape[0]
     cf_actions = np.zeros((n, horizon, test["actions"].shape[-1]), np.float32)
     cf_truth = np.zeros((n, horizon, len(OBSERVABLE_FEATURES)), np.float32)
+    # Round 12 datasets carry per-day dials, so the counterfactual is "same
+    # driving minutes, twice the cold starts" rather than a drive/park flip.
+    per_day = "trips_today" in scenarios[str(test["scenario"][0])]
     for idx in range(n):
         name, end = str(test["scenario"][idx]), int(test["end_day"][idx])
-        cf_actions[idx], day_types = build_counterfactual_actions(scenarios[name], end, horizon)
-        cf_truth[idx] = ground_truth_counterfactual(meta[name], driving, scenarios[name], end, day_types, AgingRates())
+        if per_day:
+            cf_actions[idx], plans = planned_counterfactual(scenarios[name], end, horizon, SOAK_H)
+            cf_truth[idx] = planned_ground_truth(meta[name], driving, scenarios[name], end, plans, AgingRates())
+        else:
+            cf_actions[idx], day_types = build_counterfactual_actions(scenarios[name], end, horizon)
+            cf_truth[idx] = ground_truth_counterfactual(meta[name], driving, scenarios[name], end, day_types, AgingRates())
         if (idx + 1) % 500 == 0:
             print(f"[{idx + 1}/{n}] counterfactual ground truth", flush=True)
     out = {"scenario": test["scenario"], "end_day": test["end_day"], "cf_actions": cf_actions, "cf_truth": cf_truth}

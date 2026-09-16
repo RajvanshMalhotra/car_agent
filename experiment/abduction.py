@@ -141,6 +141,60 @@ def actions_from_day_types(arr: dict, end: int, k: int, day_types: list[bool]) -
     return actions
 
 
+def planned_counterfactual(
+    arr: dict, end: int, k: int, soak_h: float,
+) -> tuple[np.ndarray, list]:
+    """Round 12's eval perturbation: same driving minutes, twice the cold starts.
+
+    Returns `(actions[k, n_action], plans)`. Flipping `is_layup` -- rounds
+    4-11's perturbation -- could not express "fewer short trips would have
+    extended it by X%", because trip length never varied. Splitting trips
+    holds total driving fixed and doubles the starts, which isolates trip
+    PATTERN from trip AMOUNT and is exactly the claim.
+    """
+    from experiment.schedule import actions_from_plans, plans_from_rows, split_trips
+
+    factual = plans_from_rows(arr, end + 1, k)
+    plans = split_trips(factual)
+    rows = actions_from_plans(plans, soak_h)
+    actions = np.array(
+        [[row[f] for f in ACTION_FEATURES] for row in rows], dtype=np.float32,
+    )
+    return actions, plans
+
+
+def planned_ground_truth(
+    scenario_meta: dict, driving_raw, arr: dict, end: int, plans: list, rates: AgingRates,
+) -> np.ndarray:
+    """Rerun the ODE from the TRUE hidden state at `end`, under `plans`."""
+    from experiment.calendar_sim import roll_planned_days
+
+    aging = AgingState(
+        corrosion_hours=float(arr["corrosion_hours"][end]),
+        crystal=float(arr["crystal"][end]),
+        shedding=float(arr["shedding"][end]),
+    )
+    state = CellState(
+        soc=float(arr["soc"][end]), temp_c=float(arr["resume_temp_c"][end]),
+        aging=aging, bay_temp_c=float(arr["resume_bay_temp_c"][end]),
+    )
+    scenario = rebuild_scenario(
+        float(arr["ambient_c"][end]), scenario_meta["parasitic_a"], scenario_meta["seed"],
+    )
+    # Seeded the way run_planned_scenario seeds it -- a full-length drive --
+    # not from a bay temperature, which is a different physical quantity and
+    # would feed the heat-soak model a number it never means.
+    from experiment.calendar_sim import TRIP_MINUTES_SEED
+
+    last_coolant_c = float(truncate_driving(driving_raw, TRIP_MINUTES_SEED)[-1]["coolant_c"])
+    rows = roll_planned_days(
+        state, scenario, driving_raw, rates, plans, SOAK_H, last_coolant_c,
+    )
+    return np.array(
+        [[row[f] for f in OBSERVABLE_FEATURES] for row in rows], dtype=np.float32,
+    )
+
+
 def build_counterfactual_actions(
     arr: dict, end: int, k: int,
 ) -> tuple[np.ndarray, list[bool]]:

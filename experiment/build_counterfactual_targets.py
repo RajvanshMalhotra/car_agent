@@ -47,11 +47,20 @@ from pathlib import Path
 
 import numpy as np
 
+import random as _random
+
 from cell.aging import AgingRates
 from experiment.abduction import (
+    SOAK_H,
     actions_from_day_types,
     ground_truth_counterfactual,
+    planned_ground_truth,
     random_perturbation_day_types,
+)
+from experiment.schedule import (
+    actions_from_plans,
+    plans_from_rows,
+    random_perturbation_plans,
 )
 from experiment.calendar_sim import ACTION_FEATURES, OBSERVABLE_FEATURES
 from experiment.data import load_daily_trajectory
@@ -81,6 +90,12 @@ def main(argv=None) -> int:
     n_action, n_obs = len(ACTION_FEATURES), len(OBSERVABLE_FEATURES)
 
     rng = np.random.default_rng(SEED)
+    py_rng = _random.Random(SEED)
+    # Round 12 datasets carry per-day dials; earlier ones have only a day type.
+    per_day_actions = "trips_today" in ACTION_FEATURES and "trips_today" in scenarios[
+        str(train["scenario"][0])
+    ]
+    print(f"per-day action space: {per_day_actions}", flush=True)
     cf_actions = np.zeros((n, k, n_action), dtype=np.float32)
     cf_observables = np.zeros((n, k, n_obs), dtype=np.float32)
 
@@ -90,11 +105,25 @@ def main(argv=None) -> int:
         arr = scenarios[name]
         meta = scenario_meta_by_name[name]
 
-        day_types = random_perturbation_day_types(arr, end, k, rng)
-        cf_actions[idx] = actions_from_day_types(arr, end, k, day_types)
-        cf_observables[idx] = ground_truth_counterfactual(
-            meta, driving_raw, arr, end, day_types, rates,
-        )
+        if per_day_actions:
+            # Round 12: perturb the dials themselves. Deliberately a different
+            # shape from the eval split_trips, so training is never handed the
+            # literal test transformation.
+            factual = plans_from_rows(arr, end + 1, k)
+            plans = random_perturbation_plans(factual, py_rng)
+            rows = actions_from_plans(plans, SOAK_H)
+            cf_actions[idx] = np.array(
+                [[row[f] for f in ACTION_FEATURES] for row in rows], dtype=np.float32,
+            )
+            cf_observables[idx] = planned_ground_truth(
+                meta, driving_raw, arr, end, plans, rates,
+            )
+        else:
+            day_types = random_perturbation_day_types(arr, end, k, rng)
+            cf_actions[idx] = actions_from_day_types(arr, end, k, day_types)
+            cf_observables[idx] = ground_truth_counterfactual(
+                meta, driving_raw, arr, end, day_types, rates,
+            )
 
         if (idx + 1) % 500 == 0 or idx == n - 1:
             print(f"[{idx + 1}/{n}] built counterfactual targets", flush=True)

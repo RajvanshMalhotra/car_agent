@@ -78,6 +78,24 @@ def scenario_split(
     return set(names[:n_train]), set(names[n_train:])
 
 
+def climate_of(base: Path, scenarios: dict, order: list[str]) -> dict[str, float]:
+    """Each battery's climate, for splitting folds by it.
+
+    Rounds 4-11 held `ambient_c` constant for a battery's life, so day 0's
+    value WAS the climate. Round 12 varies it seasonally -- 79 distinct day-0
+    values across 80 batteries, and the 42 C battery starts its year at
+    30.2 C -- so the climate has to come from the recorded annual mean
+    instead. Falls back to the trajectory column when that metadata is
+    absent, which keeps every earlier dataset splitting exactly as before.
+    """
+    meta_path = base / "scenarios.json"
+    if meta_path.exists():
+        meta = {m["scenario"]: m for m in json.loads(meta_path.read_text())}
+        if all("annual_mean_c" in meta.get(n, {}) for n in order):
+            return {n: float(meta[n]["annual_mean_c"]) for n in order}
+    return {n: float(scenarios[n]["ambient_c"][0]) for n in order}
+
+
 def holdout_split(
     scenario_names: list[str], ambient_by_scenario: dict[str, float],
     holdout_ambient: float, val_fraction: float = VAL_FRACTION, seed: int = SPLIT_SEED,
@@ -197,7 +215,7 @@ def main(argv=None) -> int:
         train_names, test_names = scenario_split(order)
         splits = {"train": train_names, "test": test_names}
     else:
-        ambient = {n: float(scenarios[n]["ambient_c"][0]) for n in order}
+        ambient = climate_of(base, scenarios, order)
         train_names, val_names, test_names = holdout_split(order, ambient, args.holdout_ambient)
         splits = {"train": train_names, "val": val_names, "test": test_names}
 

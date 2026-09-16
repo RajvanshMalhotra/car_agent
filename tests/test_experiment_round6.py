@@ -102,6 +102,32 @@ def test_holdout_split_validation_fraction_and_determinism():
     assert holdout_split(names, ambient, 42.0) == holdout_split(list(reversed(names)), ambient, 42.0)
 
 
+def test_climate_comes_from_the_annual_mean_when_days_vary(tmp_path):
+    """Round 12 varies ambient seasonally, so day 0 is no longer the climate."""
+    import json as _json
+
+    from experiment.windows import climate_of
+
+    (tmp_path / "scenarios.json").write_text(_json.dumps([
+        {"scenario": "amb42_s0000", "annual_mean_c": 42.0},
+        {"scenario": "amb-10_s0001", "annual_mean_c": -10.0},
+    ]))
+    scenarios = {
+        "amb42_s0000": {"ambient_c": np.array([30.2, 44.0])},   # starts its year cool
+        "amb-10_s0001": {"ambient_c": np.array([-12.0, 1.0])},
+    }
+    order = ["amb42_s0000", "amb-10_s0001"]
+    assert climate_of(tmp_path, scenarios, order) == {"amb42_s0000": 42.0, "amb-10_s0001": -10.0}
+
+
+def test_climate_falls_back_to_the_column_for_older_datasets(tmp_path):
+    """Rounds 4-11 have no annual_mean_c and must split exactly as before."""
+    from experiment.windows import climate_of
+
+    scenarios = {"a": {"ambient_c": np.array([25.0, 25.0])}}
+    assert climate_of(tmp_path, scenarios, ["a"]) == {"a": 25.0}
+
+
 def test_holdout_split_rejects_an_ambient_nobody_has():
     names, ambient = _names()
     with pytest.raises(ValueError):
