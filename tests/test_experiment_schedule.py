@@ -97,6 +97,59 @@ def test_planning_is_deterministic_for_a_seed():
     assert a == b
 
 
+def test_plans_round_trip_through_recorded_action_columns():
+    """What the simulator emitted must rebuild into the plans it ran."""
+    from experiment.schedule import actions_from_plans, plans_from_rows
+
+    original = plan_days(_habit(5), [False, False, True, False], random.Random(5))
+    rows = actions_from_plans(original, soak_h=8.0)
+    arr = {key: np.array([r[key] for r in rows]) for key in rows[0]}
+    rebuilt = plans_from_rows(arr, 0, len(original))
+
+    for before, after in zip(original, rebuilt):
+        assert after.trips == before.trips
+        assert after.trip_minutes == pytest.approx(before.trip_minutes, abs=1e-6)
+        assert after.ambient_c == pytest.approx(before.ambient_c, abs=1e-6)
+        assert after.accessory_a == pytest.approx(before.accessory_a, abs=1e-6)
+
+
+def test_action_rows_match_what_the_simulator_emits():
+    from experiment.schedule import actions_from_plans
+
+    rows = actions_from_plans(
+        [DayPlan(trips=0, trip_minutes=0.0, ambient_c=5.0, accessory_a=20.0),
+         DayPlan(trips=2, trip_minutes=6.0, ambient_c=5.0, accessory_a=20.0)],
+        soak_h=8.0,
+    )
+    assert rows[0]["is_layup"] == 1.0 and rows[0]["soak_hours"] == 24.0
+    assert rows[0]["driving_minutes"] == 0.0 and rows[0]["trips_today"] == 0.0
+    assert rows[1]["is_layup"] == 0.0 and rows[1]["soak_hours"] == 16.0
+    assert rows[1]["driving_minutes"] == pytest.approx(12.0)
+    assert rows[1]["trips_today"] == 2.0
+
+
+def test_training_perturbation_differs_in_shape_from_the_eval_one():
+    """Training must not be handed the literal test transformation."""
+    from experiment.schedule import random_perturbation_plans
+
+    plans = plan_days(_habit(6), [False] * 60, random.Random(6))
+    perturbed = random_perturbation_plans(plans, random.Random(7))
+    split = split_trips(plans)
+
+    assert perturbed != split
+    assert all(p.ambient_c == q.ambient_c for p, q in zip(plans, perturbed)), "weather is not a driver's choice"
+    assert any(p.trips != q.trips for p, q in zip(plans, perturbed))
+    assert all(TRIP_MINUTES_RANGE[0] <= p.trip_minutes <= TRIP_MINUTES_RANGE[1] for p in perturbed)
+    assert all(ACCESSORY_RANGE_A[0] <= p.accessory_a <= ACCESSORY_RANGE_A[1] for p in perturbed)
+
+
+def test_training_perturbation_leaves_parked_days_parked():
+    from experiment.schedule import random_perturbation_plans
+
+    plans = [DayPlan(trips=0, trip_minutes=0.0, ambient_c=5.0, accessory_a=20.0)]
+    assert random_perturbation_plans(plans, random.Random(1)) == plans
+
+
 def test_split_trips_keeps_total_driving_and_doubles_the_cold_starts():
     """The new eval counterfactual: same minutes, twice the trips."""
     plans = [DayPlan(trips=2, trip_minutes=10.0, ambient_c=25.0, accessory_a=22.0),

@@ -130,6 +130,67 @@ def plan_days(habit: Habit, layup_schedule: list[bool], rng: random.Random) -> l
     return plans
 
 
+def plans_from_rows(arr: dict, start: int, count: int) -> list[DayPlan]:
+    """Rebuild the `DayPlan`s a recorded stretch of days was run under.
+
+    The abduction test needs the FACTUAL actions of the days it is about to
+    replace, and the dataset stores them as action columns rather than as
+    plans. `trip_minutes` is recovered by dividing the day's driving minutes
+    by its trip count, which is exactly how `DayPlan.driving_minutes` built it.
+    """
+    plans: list[DayPlan] = []
+    for day in range(start, start + count):
+        trips = int(round(float(arr["trips_today"][day])))
+        minutes = float(arr["driving_minutes"][day]) / trips if trips else 0.0
+        plans.append(DayPlan(
+            trips=trips,
+            trip_minutes=minutes,
+            ambient_c=float(arr["ambient_c"][day]),
+            accessory_a=float(arr["accessory_a"][day]),
+        ))
+    return plans
+
+
+def actions_from_plans(plans: list[DayPlan], soak_h: float) -> list[dict]:
+    """One `ACTION_FEATURES`-shaped dict per plan, matching what the sim emits.
+
+    Kept in step with `experiment/calendar_sim.py:step_one_day` -- a parked day
+    soaks the full 24 h, a driving day soaks `soak_h` after each trip.
+    """
+    rows = []
+    for plan in plans:
+        rows.append({
+            "is_layup": 1.0 if plan.is_layup else 0.0,
+            "driving_minutes": plan.driving_minutes,
+            "soak_hours": 24.0 if plan.is_layup else plan.trips * soak_h,
+            "ambient_c": plan.ambient_c,
+            "trips_today": float(plan.trips),
+            "accessory_a": plan.accessory_a,
+        })
+    return rows
+
+
+def random_perturbation_plans(plans: list[DayPlan], rng: random.Random) -> list[DayPlan]:
+    """A randomised perturbation for the TRAINING curriculum.
+
+    Deliberately a different shape from `split_trips`, which the evaluation
+    uses: training must never be handed the literal test transformation. Each
+    day independently re-draws its trip count and trip length within the
+    physical envelope, and jitters its accessory load; ambient is left alone,
+    since a driver does not choose the weather.
+    """
+    out: list[DayPlan] = []
+    for plan in plans:
+        if plan.trips == 0:
+            out.append(plan)
+            continue
+        trips = min(MAX_TRIPS, max(1, plan.trips + rng.choice((-1, 0, 1))))
+        minutes = _clip(plan.trip_minutes * rng.uniform(0.5, 1.8), TRIP_MINUTES_RANGE)
+        accessory = _clip(plan.accessory_a + rng.gauss(0.0, 4.0), ACCESSORY_RANGE_A)
+        out.append(replace(plan, trips=trips, trip_minutes=minutes, accessory_a=accessory))
+    return out
+
+
 def split_trips(plans: list[DayPlan]) -> list[DayPlan]:
     """The evaluation counterfactual: same driving minutes, twice the trips.
 
