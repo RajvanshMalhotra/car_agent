@@ -36,6 +36,7 @@ never be fed to the model.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Sequence
 
 from cell.aging import AgingRates, soh
@@ -54,8 +55,17 @@ LAYUP_SOAK_DT_S = 300.0
 
 #: Exogenous, schedule-controlled daily fields. Fixed column order shared by
 #: dataset build, model, and abduction code so they cannot drift apart.
+#: Trip length used only to seed `last_coolant_c` before the first driving day.
+TRIP_MINUTES_SEED = 20.0
+
+#: Round 12 appended `trips_today` and `accessory_a` rather than replacing
+#: anything, so every name-based lookup and the round 7 anchor keep working.
+#: `trips_today` is deliberately separate from `driving_minutes`: together they
+#: distinguish one 20-minute trip from four 5-minute ones, which is the whole
+#: point of the richer action space.
 ACTION_FEATURES: tuple[str, ...] = (
     "is_layup", "driving_minutes", "soak_hours", "ambient_c",
+    "trips_today", "accessory_a",
 )
 
 #: What the physics produces in response to a day's actions. What a real
@@ -119,6 +129,7 @@ def step_one_day(
     trips_per_day: float,
     soak_h: float,
     last_coolant_c: float,
+    accessory_a: float | None = None,
 ) -> tuple[dict, dict]:
     """Advance `state` by exactly one real calendar day, in place.
 
@@ -137,6 +148,8 @@ def step_one_day(
         obs.update(
             is_layup=1.0, driving_minutes=0.0, soak_hours=24.0,
             ambient_c=scenario.ambient_c,
+            trips_today=0.0,
+            accessory_a=scenario.accessory_base_a if accessory_a is None else accessory_a,
         )
     else:
         n_trips = int(round(trips_per_day))
@@ -155,6 +168,8 @@ def step_one_day(
             driving_minutes=n_trips * (len(trip_samples) / 60.0),
             soak_hours=n_trips * soak_h,
             ambient_c=scenario.ambient_c,
+            trips_today=float(n_trips),
+            accessory_a=scenario.accessory_base_a if accessory_a is None else accessory_a,
         )
     health = soh(state.aging, rates)
     hidden = {
@@ -216,6 +231,100 @@ def run_calendar_scenario(
         obs, hidden = step_one_day(
             state, scenario, trip_samples, rates, is_layup, trips_per_day,
             soak_h, last_coolant_c,
+        )
+        row = {"day": day}
+        row.update(obs)
+        row.update(hidden)
+        rows.append(row)
+    return rows
+
+
+def run_planned_scenario(
+    driving_samples: Sequence,
+    plans: Sequence,
+    rates: AgingRates,
+    soak_h: float,
+    seed: int,
+    parasitic_a: float,
+) -> list[dict]:
+    """Round 12: one row per day, every day drawn from its own `DayPlan`.
+
+    The round 4-11 path above holds trip length, ambient and accessory load
+    fixed for a battery's whole life, so within one battery `ambient_c` had a
+    single value and trip length at most two. Here each day carries its own
+    dials, which is what makes trip-pattern counterfactuals expressible.
+
+    Two details that are easy to get wrong and would quietly shrink the very
+    effects this round exists to measure:
+
+    - the drive is truncated **per day**, so a short day really is a short
+      drive rather than the battery's habitual one;
+    - `last_coolant_c` is carried from the last day that actually drove.
+      Computing it once per battery (as the fixed path does) would hand every
+      day the heat soak of a trip length it never took.
+    """
+    first = plans[0]
+    scenario = BatteryScenario(
+        name=f"cal_s{seed}", ambient_c=first.ambient_c,
+        parasitic_a=parasitic_a, seed=seed,
+    )
+    state = CellState(temp_c=first.ambient_c)
+    # Seeded from a full-length drive so day 0 has a coolant reading even if
+    # the battery happens to start parked.
+    last_coolant_c = float(truncate_driving(driving_samples, TRIP_MINUTES_SEED)[-1]["coolant_c"])
+
+    rows = []
+    for day, plan in enumerate(plans):
+        day_scenario = replace(
+            scenario, ambient_c=plan.ambient_c, accessory_base_a=plan.accessory_a,
+        )
+        if plan.trips:
+            trip_samples = truncate_driving(driving_samples, plan.trip_minutes)
+            last_coolant_c = float(trip_samples[-1]["coolant_c"])
+        else:
+            trip_samples = ()
+        obs, hidden = step_one_day(
+            state, day_scenario, trip_samples, rates, plan.is_layup, plan.trips,
+            soak_h, last_coolant_c, accessory_a=plan.accessory_a,
+        )
+        row = {"day": day}
+        row.update(obs)
+        row.update(hidden)
+        rows.append(row)
+    return rows
+
+
+def roll_planned_days(
+    state: CellState,
+    scenario: BatteryScenario,
+    driving_samples: Sequence,
+    rates: AgingRates,
+    plans: Sequence,
+    soak_h: float,
+    last_coolant_c: float,
+) -> list[dict]:
+    """`roll_days` for the round 12 action space: a sequence of `DayPlan`s.
+
+    The counterfactual replay path. `state` is rebuilt from a factual
+    scenario's true hidden state at some day, and `plans` is a DIFFERENT
+    action sequence than what happened -- for round 12 that is
+    `experiment.schedule.split_trips`, which holds total driving minutes fixed
+    and doubles the cold starts. Same ODE, same starting hidden state,
+    different actions: Pearl's action step, with `state` supplying abduction.
+    """
+    rows = []
+    for day, plan in enumerate(plans):
+        day_scenario = replace(
+            scenario, ambient_c=plan.ambient_c, accessory_base_a=plan.accessory_a,
+        )
+        if plan.trips:
+            trip_samples = truncate_driving(driving_samples, plan.trip_minutes)
+            last_coolant_c = float(trip_samples[-1]["coolant_c"])
+        else:
+            trip_samples = ()
+        obs, hidden = step_one_day(
+            state, day_scenario, trip_samples, rates, plan.is_layup, plan.trips,
+            soak_h, last_coolant_c, accessory_a=plan.accessory_a,
         )
         row = {"day": day}
         row.update(obs)
