@@ -1,0 +1,23 @@
+RSSM parameters: 10914
+epoch   0  recon_window=0.1564  recon_factual=0.4142  recon_cf=0.5003  kl=1.5882  kl_weight=0.0010  val_rollout=0.2466 (best epoch 0)
+epoch  10  recon_window=0.0186  recon_factual=0.0439  recon_cf=0.0882  kl=4.1301  kl_weight=0.0100  val_rollout=0.0332 (best epoch 10)
+epoch  20  recon_window=0.0129  recon_factual=0.0229  recon_cf=0.0313  kl=3.3401  kl_weight=0.0100  val_rollout=0.0223 (best epoch 20)
+epoch  30  recon_window=0.0108  recon_factual=0.0169  recon_cf=0.0218  kl=3.3114  kl_weight=0.0100  val_rollout=0.0230 (best epoch 27)
+epoch  40  recon_window=0.0090  recon_factual=0.0110  recon_cf=0.0158  kl=3.2699  kl_weight=0.0100  val_rollout=0.0129 (best epoch 40)
+epoch  50  recon_window=0.0074  recon_factual=0.0089  recon_cf=0.0128  kl=3.1731  kl_weight=0.0100  val_rollout=0.0142 (best epoch 47)
+epoch  60  recon_window=0.0062  recon_factual=0.0089  recon_cf=0.0117  kl=3.1897  kl_weight=0.0100  val_rollout=0.0105 (best epoch 57)
+epoch  70  recon_window=0.0052  recon_factual=0.0077  recon_cf=0.0102  kl=3.2294  kl_weight=0.0100  val_rollout=0.0099 (best epoch 63)
+epoch  80  recon_window=0.0047  recon_factual=0.0074  recon_cf=0.0098  kl=3.2649  kl_weight=0.0100  val_rollout=0.0086 (best epoch 71)
+epoch  90  recon_window=0.0045  recon_factual=0.0074  recon_cf=0.0095  kl=3.3681  kl_weight=0.0100  val_rollout=0.0090 (best epoch 88)
+epoch  99  recon_window=0.0043  recon_factual=0.0079  recon_cf=0.0095  kl=3.4363  kl_weight=0.0100  val_rollout=0.0079 (best epoch 95)
+
+restored best epoch 95 (val rollout MSE 0.00671)
+
+GATE 2 -- 30-day imagined rollout (standardized MSE, test set):
+  model:                0.00780
+  persistence (repeat): 0.78370
+  train mean:           0.71265
+  model clearly beats both rollout baselines: True
+
+wrote runs/loco/hold10/ref_s0/rssm_world_model.pt
+wrote runs/loco/hold10/ref_s0/rssm_gate2_results.json

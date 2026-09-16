@@ -1,0 +1,13 @@
+rssm cf (offsets=False, anchored=True), 1500 windows
+  tolerance accuracy: model 78.3%   baseline 61.7%
+    v_mean      model  72.4% (MAE 0.0435)   baseline  32.3%
+    v_min       model  45.4% (MAE 0.1083)   baseline  28.3%
+    v_max       model  69.7% (MAE 0.0447)   baseline  36.0%
+    i_mean      model  95.1% (MAE 0.2057)   baseline  78.2%
+    i_mean_abs  model  92.7% (MAE 0.2165)   baseline  78.1%
+    t_bat_mean  model  95.6% (MAE 0.4011)   baseline  87.5%
+    t_bat_max   model  89.4% (MAE 0.4771)   baseline  81.6%
+    t_bay_mean  model  80.9% (MAE 0.8425)   baseline  87.2%
+    t_bay_max   model  87.1% (MAE 0.6796)   baseline  87.2%
+    soc         model  54.4% (MAE 0.0296)   baseline  20.7%
+wrote runs/loco/hold25/ema_s0/rssm_accuracy_cf.json

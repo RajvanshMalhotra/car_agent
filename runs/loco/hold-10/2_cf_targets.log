@@ -1,0 +1,14 @@
+[500/6000] built counterfactual targets
+[1000/6000] built counterfactual targets
+[1500/6000] built counterfactual targets
+[2000/6000] built counterfactual targets
+[2500/6000] built counterfactual targets
+[3000/6000] built counterfactual targets
+[3500/6000] built counterfactual targets
+[4000/6000] built counterfactual targets
+[4500/6000] built counterfactual targets
+[5000/6000] built counterfactual targets
+[5500/6000] built counterfactual targets
+[6000/6000] built counterfactual targets
+
+wrote runs/loco/hold-10/windows_train_cf.npz (6000 examples, 30-day randomized counterfactual continuations)

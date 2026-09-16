@@ -1,0 +1,13 @@
+rssm factual (offsets=False, anchored=True), 1500 windows
+  tolerance accuracy: model 87.9%   baseline 83.7%
+    v_mean      model  92.4% (MAE 0.0193)   baseline  78.4%
+    v_min       model  67.1% (MAE 0.0824)   baseline  67.3%
+    v_max       model  87.9% (MAE 0.0237)   baseline  84.0%
+    i_mean      model  88.4% (MAE 0.2653)   baseline  80.7%
+    i_mean_abs  model  87.6% (MAE 0.2725)   baseline  80.8%
+    t_bat_mean  model  97.8% (MAE 0.3162)   baseline  92.3%
+    t_bat_max   model  97.2% (MAE 0.2993)   baseline  91.0%
+    t_bay_mean  model  91.6% (MAE 0.3418)   baseline  95.7%
+    t_bay_max   model  90.5% (MAE 0.3654)   baseline  95.7%
+    soc         model  78.8% (MAE 0.0142)   baseline  71.6%
+wrote runs/loco/hold42/ema_s1/rssm_accuracy_factual.json
