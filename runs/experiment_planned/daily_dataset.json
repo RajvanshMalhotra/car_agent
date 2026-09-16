@@ -1,0 +1,76 @@
+{
+  "git_commit": "5225ec7fbaf2edc70c78d322cf24093f3bb7ea45",
+  "trajectory": "runs/telemetry.csv",
+  "horizon_days": 2000,
+  "scenarios": 80,
+  "day_rows": 160000,
+  "sampling_seed": 42,
+  "per_day_actions": true,
+  "axes": {
+    "annual_mean_c": [
+      -10.0,
+      10.0,
+      25.0,
+      42.0
+    ],
+    "scenarios_per_ambient": 20,
+    "seasonal_amplitude_c": [
+      5.0,
+      15.0
+    ],
+    "ambient_clamp_c": [
+      -35.0,
+      55.0
+    ],
+    "trip_minutes_range": [
+      1.5,
+      20.0
+    ],
+    "accessory_range_a": [
+      12.0,
+      55.0
+    ],
+    "max_trips_per_day": 3,
+    "layup_days_range": [
+      0.0,
+      30.0
+    ],
+    "layup_gap_days_range": [
+      20.0,
+      120.0
+    ],
+    "parasitic_a_range": [
+      0.02,
+      0.1
+    ],
+    "soak_h": 8.0
+  },
+  "action_features": [
+    "is_layup",
+    "driving_minutes",
+    "soak_hours",
+    "ambient_c",
+    "trips_today",
+    "accessory_a"
+  ],
+  "observable_features": [
+    "v_mean",
+    "v_min",
+    "v_max",
+    "i_mean",
+    "i_mean_abs",
+    "t_bat_mean",
+    "t_bat_max",
+    "t_bay_mean",
+    "t_bay_max",
+    "soc"
+  ],
+  "hidden_fields": [
+    "crystal",
+    "corrosion_hours",
+    "shedding",
+    "soh"
+  ],
+  "elapsed_s": 39530.75657892227,
+  "note": "Round 12. Every calendar day carries its own trip count, trip length, ambient and accessory load, drawn from a per-battery habit. Rounds 4-11 held all four fixed for life, so the only expressible counterfactual was drive-or-park. Same single recording as every other round: trip length truncates it, nothing new was recorded."
+}
