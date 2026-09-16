@@ -34,7 +34,7 @@ def model_config(model: nn.Module) -> dict:
             "deter": model.deter, "stoch": model.stoch, "hidden": model.hidden,
             "anchored": model.anchored,
             "decoder_layers": model.decoder_layers, "anchor_skip": model.anchor_skip,
-            "attn_anchor": model.attn_anchor,
+            "attn_anchor": model.attn_anchor, "ema_skip": model.ema_skip,
         }
     return {
         "arch": "gru_vae", "n_action": model.n_action, "n_obs": model.n_obs,
@@ -53,6 +53,7 @@ def build_model(checkpoint: dict) -> nn.Module:
             decoder_layers=checkpoint.get("decoder_layers", 1),
             anchor_skip=checkpoint.get("anchor_skip", False),
             attn_anchor=checkpoint.get("attn_anchor", False),
+            ema_skip=checkpoint.get("ema_skip", False),
         )
     else:
         model = WorldModel(
@@ -96,7 +97,7 @@ def rollout_kwargs(model: nn.Module, window_actions, window_observables) -> dict
     use this instead of each deciding for themselves -- experiment/accuracy.py
     once did and silently could not score a finished attention model.
     """
-    if getattr(model, "attn_anchor", False):
+    if getattr(model, "attn_anchor", False) or getattr(model, "ema_skip", False):
         return {"window_actions": window_actions, "window_observables": window_observables}
     return {}
 

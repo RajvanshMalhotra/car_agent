@@ -36,6 +36,7 @@ import torch
 from torch import nn
 
 from experiment.attention import AttentionAnchor
+from experiment.ema import feature_dim, relative_ema_features, relative_ema_features_causal
 
 #: Keeps a freshly initialised or badly trained head from producing an
 #: exp(logvar) that overflows or underflows in the KL.
@@ -81,12 +82,17 @@ class RSSM(nn.Module):
         self, n_action: int, n_obs: int, deter: int = 36, stoch: int = 8,
         hidden: int = 32, anchored: bool = False,
         decoder_layers: int = 1, anchor_skip: bool = False, attn_anchor: bool = False,
+        ema_skip: bool = False,
     ) -> None:
         super().__init__()
         if anchor_skip and not anchored:
             raise ValueError("anchor_skip injects the anchor, so it requires anchored=True")
         if attn_anchor and not anchored:
             raise ValueError("attn_anchor picks the anchor, so it requires anchored=True")
+        if ema_skip and not anchored:
+            raise ValueError("ema_skip is relative to the anchor, so it requires anchored=True")
+        if ema_skip and anchor_skip:
+            raise ValueError("ema_skip and anchor_skip both drive the decoder skips; pick one")
         if decoder_layers < 1:
             raise ValueError("decoder_layers must be at least 1")
         #: Round 8: decoder depth, and residual skips projecting the anchor into
@@ -96,6 +102,9 @@ class RSSM(nn.Module):
         #: Round 10: the anchor is attention over the observed window
         #: (experiment/attention.py), not the fixed same-day-type rule.
         self.attn_anchor = attn_anchor
+        #: Round 11: the decoder skips carry stacked EMAs of the window
+        #: RELATIVE to the anchor (experiment/ema.py), never absolute levels.
+        self.ema_skip = ema_skip
         self.n_action = n_action
         self.n_obs = n_obs
         self.deter = deter
@@ -108,15 +117,20 @@ class RSSM(nn.Module):
         self.cell = nn.GRUCell(stoch + n_action, deter)
         self.prior_head = _mlp(deter, hidden, 2 * stoch)
         self.post_head = _mlp(deter + n_obs, hidden, 2 * stoch)
-        if decoder_layers == 1 and not anchor_skip:
+        #: Width of whatever drives the decoder skips: the anchor itself
+        #: (round 8) or the stacked relative EMAs (round 11).
+        self.skip_dim = feature_dim(n_obs) if ema_skip else n_obs
+        if decoder_layers == 1 and not (anchor_skip or ema_skip):
             # Round 5-7 decoder, same parameter names, so their checkpoints load unchanged.
             self.decoder = _mlp(deter + stoch, hidden, n_obs)
         else:
             self.dec_layers = nn.ModuleList(
                 nn.Linear(deter + stoch if l == 0 else hidden, hidden) for l in range(decoder_layers)
             )
-            if anchor_skip:
-                self.dec_skips = nn.ModuleList(nn.Linear(n_obs, hidden) for _ in range(decoder_layers))
+            if anchor_skip or ema_skip:
+                self.dec_skips = nn.ModuleList(
+                    nn.Linear(self.skip_dim, hidden) for _ in range(decoder_layers)
+                )
             self.dec_head = nn.Linear(hidden, n_obs)
         if attn_anchor:
             self.attn = AttentionAnchor(n_action=n_action, n_obs=n_obs, deter=deter)
@@ -130,7 +144,10 @@ class RSSM(nn.Module):
         """The final projection to observables, whichever decoder layout is in use."""
         return self.decoder[-1] if hasattr(self, "decoder") else self.dec_head
 
-    def _decode(self, h: torch.Tensor, s: torch.Tensor, anchor: torch.Tensor | None) -> torch.Tensor:
+    def _decode(
+        self, h: torch.Tensor, s: torch.Tensor, anchor: torch.Tensor | None,
+        skip: torch.Tensor | None = None,
+    ) -> torch.Tensor:
         """One day's observables from `[h, s]`; `anchor + correction` when anchored.
 
         With `anchor_skip`, every hidden layer also receives a linear projection
@@ -141,12 +158,16 @@ class RSSM(nn.Module):
         if hasattr(self, "decoder"):
             out = self.decoder(x)
         else:
-            if self.anchor_skip and anchor is None:
-                raise ValueError("an anchor_skip decoder needs anchors")
+            if self.anchor_skip:
+                if anchor is None:
+                    raise ValueError("an anchor_skip decoder needs anchors")
+                skip = anchor
+            elif self.ema_skip and skip is None:
+                raise ValueError("an ema_skip decoder needs its EMA features")
             for l, layer in enumerate(self.dec_layers):
                 z = layer(x)
-                if self.anchor_skip:
-                    z = z + self.dec_skips[l](anchor)
+                if skip is not None:
+                    z = z + self.dec_skips[l](skip)
                 x = nn.functional.elu(z)
             out = self.dec_head(x)
         return out if anchor is None else anchor + out
@@ -180,6 +201,14 @@ class RSSM(nn.Module):
         batch, days, _ = actions.shape
         if self.attn_anchor and anchors is None:
             anchors = "attend"  # computed per day below, causally
+        ema_features = None
+        if self.ema_skip and torch.is_tensor(anchors):
+            # Day t's EMA covers days strictly before t, like window_anchors.
+            ema_features = torch.tensor(
+                relative_ema_features_causal(
+                    observables.detach().cpu().numpy(), anchors.detach().cpu().numpy(),
+                ), device=observables.device,
+            )
         state = self.zero_state(batch)
         h, s = state[:, :self.deter], state[:, self.deter:]
         prior_mu, prior_logvar, post_mu, post_logvar, recon = [], [], [], [], []
@@ -200,10 +229,13 @@ class RSSM(nn.Module):
                     h.unsqueeze(1), actions[:, t:t + 1, :],
                 )[:, 0, :]
                 recon.append(self._decode(h, s, anchor_t))
-            elif not (self.anchor_skip and anchors is None):
+            elif not ((self.anchor_skip or self.ema_skip) and anchors is None):
                 # Abduction filters without anchors; the belief never depends on the
                 # reconstruction, so a skip decoder simply has none to produce.
-                recon.append(self._decode(h, s, None if anchors is None else anchors[:, t, :]))
+                recon.append(self._decode(
+                    h, s, None if anchors is None else anchors[:, t, :],
+                    skip=None if ema_features is None else ema_features[:, t, :],
+                ))
         return {
             "prior_mu": torch.stack(prior_mu, dim=1),
             "prior_logvar": torch.stack(prior_logvar, dim=1),
@@ -239,6 +271,18 @@ class RSSM(nn.Module):
             if window_actions is None or window_observables is None:
                 raise ValueError("an attn_anchor rollout needs the observed window")
             anchors = None  # picked per day below
+        ema_features = None
+        if self.ema_skip:
+            if window_observables is None:
+                raise ValueError("an ema_skip rollout needs the observed window")
+            if anchors is None:
+                raise ValueError("an ema_skip rollout needs anchors to be relative to")
+            # EMA frozen at the window's end: never fed the model's own predictions.
+            ema_features = torch.tensor(
+                relative_ema_features(
+                    window_observables.detach().cpu().numpy(), anchors.detach().cpu().numpy(),
+                ), device=anchors.device,
+            )
         h, s = state[:, :self.deter], state[:, self.deter:]
         outputs = []
         for t in range(action_seq.shape[1]):
@@ -251,7 +295,9 @@ class RSSM(nn.Module):
                 )[:, 0, :]
             else:
                 anchor_t = None if anchors is None else anchors[:, t, :]
-            outputs.append(self._decode(h, s, anchor_t))
+            outputs.append(self._decode(
+                h, s, anchor_t, skip=None if ema_features is None else ema_features[:, t, :],
+            ))
         return torch.stack(outputs, dim=1)
 
     def sample_rollouts(
@@ -265,10 +311,11 @@ class RSSM(nn.Module):
         batch = actions.shape[0]
         window_a, window_o = actions.repeat(n, 1, 1), observables.repeat(n, 1, 1)
         post = self.filter(window_a, window_o, sample=True)
+        needs_window = self.attn_anchor or self.ema_skip
         pred = self.rollout(
             post["state"], future_actions.repeat(n, 1, 1), sample=True,
             anchors=None if anchors is None else anchors.repeat(n, 1, 1),
-            window_actions=window_a if self.attn_anchor else None,
-            window_observables=window_o if self.attn_anchor else None,
+            window_actions=window_a if needs_window else None,
+            window_observables=window_o if needs_window else None,
         )
         return pred.view(n, batch, *pred.shape[1:])

@@ -85,6 +85,8 @@ def main(argv=None) -> int:
                         help="round 8: project the anchor into every decoder hidden layer")
     parser.add_argument("--attn-anchor", action="store_true",
                         help="round 10: pick the anchor by attention over the observed window")
+    parser.add_argument("--ema-skip", action="store_true",
+                        help="round 11: stacked EMAs of the window, relative to the anchor, into the decoder skips")
     parser.add_argument("--seed", type=int, default=SEED,
                         help="round 11: vary for multi-seed runs; default reproduces rounds 5-10")
     args = parser.parse_args(argv)
@@ -127,7 +129,7 @@ def main(argv=None) -> int:
         n_action=train["actions"].shape[-1], n_obs=train["observables"].shape[-1],
         deter=DETER, stoch=STOCH, hidden=HIDDEN, anchored=args.anchored,
         decoder_layers=args.decoder_layers, anchor_skip=args.anchor_skip,
-        attn_anchor=args.attn_anchor,
+        attn_anchor=args.attn_anchor, ema_skip=args.ema_skip,
     ).to(device)
     n_params = sum(p.numel() for p in model.parameters())
     print(f"RSSM parameters: {n_params}", flush=True)
@@ -149,14 +151,15 @@ def main(argv=None) -> int:
             b = {k: v[idx].to(device) for k, v in tr.items()}
 
             anchor = (lambda key: b[key]) if args.anchored else (lambda key: None)
-            post = model.filter(b["actions"], b["observables"], sample=True, anchors=anchor("window_anchors"))
+            post = model.filter(
+                b["actions"], b["observables"], sample=True, anchors=anchor("window_anchors"))
             recon_window = mse(post["recon"], b["observables"])
             kl = balanced_kl(
                 post["post_mu"], post["post_logvar"], post["prior_mu"], post["prior_logvar"],
                 alpha=KL_BALANCE, free_bits=FREE_BITS_PER_DAY,
             )
             window = ({"window_actions": b["actions"], "window_observables": b["observables"]}
-                      if args.attn_anchor else {})
+                      if (args.attn_anchor or args.ema_skip) else {})
             pred_factual = model.rollout(
                 post["state"], b["future_actions"], anchors=anchor("future_anchors"), **window)
             pred_cf = model.rollout(
@@ -203,7 +206,7 @@ def main(argv=None) -> int:
             model.abduct(actions, observables), future_actions,
             anchors=te["future_anchors"].to(device) if args.anchored else None,
             **({"window_actions": actions, "window_observables": observables}
-               if args.attn_anchor else {}),
+               if (args.attn_anchor or args.ema_skip) else {}),
         )
         model_mse = mse(pred, future_observables).item()
         persistence_pred = observables[:, -1, :].unsqueeze(1).expand_as(future_observables)
@@ -257,7 +260,7 @@ def main(argv=None) -> int:
             "grad_clip": GRAD_CLIP, "seed": args.seed,
             "offsets": args.offsets, "anchored": args.anchored,
             "decoder_layers": args.decoder_layers, "anchor_skip": args.anchor_skip,
-            "attn_anchor": args.attn_anchor,
+            "attn_anchor": args.attn_anchor, "ema_skip": args.ema_skip,
         },
     }, indent=2))
     print(f"wrote {results_path}")
