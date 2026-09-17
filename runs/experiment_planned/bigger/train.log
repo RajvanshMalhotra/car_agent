@@ -1,0 +1,43 @@
+RSSM parameters: 78346
+epoch   0  recon_window=0.2476  recon_factual=0.5827  recon_cf=0.6071  kl=2.4203  kl_weight=0.0010  val_rollout=0.4959 (best epoch 0)
+epoch  10  recon_window=0.0425  recon_factual=0.1062  recon_cf=0.1108  kl=13.1045  kl_weight=0.0100  val_rollout=0.1319 (best epoch 10)
+epoch  20  recon_window=0.0302  recon_factual=0.0647  recon_cf=0.0675  kl=10.8671  kl_weight=0.0100  val_rollout=0.0749 (best epoch 20)
+epoch  30  recon_window=0.0241  recon_factual=0.0556  recon_cf=0.0576  kl=10.0580  kl_weight=0.0100  val_rollout=0.0655 (best epoch 28)
+epoch  40  recon_window=0.0208  recon_factual=0.0427  recon_cf=0.0441  kl=9.9467  kl_weight=0.0100  val_rollout=0.0540 (best epoch 40)
+epoch  50  recon_window=0.0183  recon_factual=0.0341  recon_cf=0.0351  kl=9.3738  kl_weight=0.0100  val_rollout=0.0469 (best epoch 48)
+epoch  60  recon_window=0.0171  recon_factual=0.0294  recon_cf=0.0303  kl=8.7557  kl_weight=0.0100  val_rollout=0.0380 (best epoch 55)
+epoch  70  recon_window=0.0156  recon_factual=0.0253  recon_cf=0.0265  kl=8.4682  kl_weight=0.0100  val_rollout=0.0342 (best epoch 69)
+epoch  80  recon_window=0.0153  recon_factual=0.0249  recon_cf=0.0261  kl=8.1587  kl_weight=0.0100  val_rollout=0.0334 (best epoch 69)
+epoch  90  recon_window=0.0147  recon_factual=0.0235  recon_cf=0.0246  kl=8.2823  kl_weight=0.0100  val_rollout=0.0298 (best epoch 90)
+epoch 100  recon_window=0.0133  recon_factual=0.0208  recon_cf=0.0221  kl=7.7227  kl_weight=0.0100  val_rollout=0.0308 (best epoch 96)
+epoch 110  recon_window=0.0144  recon_factual=0.0224  recon_cf=0.0236  kl=7.8465  kl_weight=0.0100  val_rollout=0.0289 (best epoch 108)
+epoch 120  recon_window=0.0124  recon_factual=0.0197  recon_cf=0.0209  kl=7.5670  kl_weight=0.0100  val_rollout=0.0278 (best epoch 116)
+epoch 130  recon_window=0.0131  recon_factual=0.0205  recon_cf=0.0216  kl=7.8417  kl_weight=0.0100  val_rollout=0.0309 (best epoch 116)
+epoch 140  recon_window=0.0129  recon_factual=0.0197  recon_cf=0.0210  kl=7.7768  kl_weight=0.0100  val_rollout=0.0284 (best epoch 131)
+epoch 150  recon_window=0.0155  recon_factual=0.0228  recon_cf=0.0242  kl=8.4788  kl_weight=0.0100  val_rollout=0.0368 (best epoch 131)
+epoch 160  recon_window=0.0382  recon_factual=0.0533  recon_cf=0.0542  kl=17.8604  kl_weight=0.0100  val_rollout=0.0433 (best epoch 131)
+epoch 170  recon_window=0.0202  recon_factual=0.0287  recon_cf=0.0301  kl=14.6723  kl_weight=0.0100  val_rollout=0.0334 (best epoch 131)
+epoch 180  recon_window=0.0176  recon_factual=0.0267  recon_cf=0.0281  kl=10.3633  kl_weight=0.0100  val_rollout=0.0415 (best epoch 131)
+epoch 190  recon_window=0.0182  recon_factual=0.0276  recon_cf=0.0291  kl=11.0881  kl_weight=0.0100  val_rollout=0.0346 (best epoch 131)
+epoch 200  recon_window=0.0182  recon_factual=0.0287  recon_cf=0.0301  kl=10.7210  kl_weight=0.0100  val_rollout=0.0422 (best epoch 131)
+epoch 210  recon_window=0.0210  recon_factual=0.0308  recon_cf=0.0330  kl=13.4682  kl_weight=0.0100  val_rollout=0.0384 (best epoch 131)
+epoch 220  recon_window=0.0191  recon_factual=0.0277  recon_cf=0.0294  kl=11.7116  kl_weight=0.0100  val_rollout=0.0369 (best epoch 131)
+epoch 230  recon_window=0.0170  recon_factual=0.0265  recon_cf=0.0286  kl=11.5235  kl_weight=0.0100  val_rollout=0.0418 (best epoch 131)
+epoch 240  recon_window=0.0165  recon_factual=0.0247  recon_cf=0.0264  kl=11.1043  kl_weight=0.0100  val_rollout=0.0325 (best epoch 131)
+epoch 250  recon_window=0.0148  recon_factual=0.0221  recon_cf=0.0235  kl=10.9364  kl_weight=0.0100  val_rollout=0.0301 (best epoch 131)
+epoch 260  recon_window=0.0142  recon_factual=0.0216  recon_cf=0.0232  kl=10.3435  kl_weight=0.0100  val_rollout=0.0323 (best epoch 131)
+epoch 270  recon_window=0.0184  recon_factual=0.0275  recon_cf=0.0292  kl=13.7557  kl_weight=0.0100  val_rollout=0.0354 (best epoch 131)
+epoch 280  recon_window=0.0137  recon_factual=0.0208  recon_cf=0.0223  kl=9.0640  kl_weight=0.0100  val_rollout=0.0311 (best epoch 131)
+epoch 290  recon_window=0.0143  recon_factual=0.0212  recon_cf=0.0228  kl=9.0161  kl_weight=0.0100  val_rollout=0.0349 (best epoch 131)
+epoch 299  recon_window=0.0183  recon_factual=0.0278  recon_cf=0.0298  kl=13.1564  kl_weight=0.0100  val_rollout=0.0377 (best epoch 131)
+
+restored best epoch 131 (val rollout MSE 0.02619)
+
+GATE 2 -- 30-day imagined rollout (standardized MSE, test set):
+  model:                0.04981
+  persistence (repeat): 1.34541
+  train mean:           2.05263
+  model clearly beats both rollout baselines: True
+
+wrote runs/experiment_planned/bigger/rssm_world_model.pt
+wrote runs/experiment_planned/bigger/rssm_gate2_results.json
