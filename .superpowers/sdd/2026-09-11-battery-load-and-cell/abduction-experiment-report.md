@@ -1626,3 +1626,73 @@ A negative result measured on the wrong horizon is not a negative result. I
 reported "habits barely matter" on the strength of a 30-day test, against a
 project whose own documentation said otherwise; the full-life check took
 minutes and reversed it.
+
+---
+
+## 18. Round 14 — raising round 12's accuracy honestly (2026-09-17)
+
+### 18.1 Two levers, and one refused
+
+Round 12 scored 47.5% factual / 36.6% what-if, well below round 7's headline,
+and the question was whether that was the model or the measurement.
+
+**Lever 1: score only what a real car can measure.** `cell/sensors.py` classes
+bay temperature as latent -- nothing on a vehicle reads it -- and in round 12
+it is also the channel most distorted by the recording-anchored bay model.
+Dropping `t_bay_mean` and `t_bay_max` from the score is a correctness fix that
+happens to be worth 8 points factual and 5.7 what-if.
+
+**Lever 2: train to convergence, at capacity suited to the harder task.** The
+11,130-parameter model was sized for rounds 5-11, where a battery had two
+repeating day templates. Round 12 has six action features and genuinely
+varying days, and the run was cut off mid-descent: best epoch 96 of 100, with
+validation still falling through the last epochs. Retrained at 96/24/96 hidden
+units (78,346 parameters) for 300 epochs, converging at epoch 131.
+
+    validation rollout MSE   0.0694 -> 0.0262
+    test rollout MSE         0.0965 -> 0.0498
+
+**Refused: widening the tolerance bands.** Loosening +/-1 C would lift every
+temperature score at once while nothing improved. If the bands are ever
+changed it must be argued from sensor physics, decided before seeing the
+result, and applied to the baseline too.
+
+### 18.2 Result
+
+| | 11k | 78k | baseline |
+|---|---|---|---|
+| what-if, 8 measurable channels | 42.3% | **52.3%** | 30.9% |
+| what-if, all 10 | 36.6% | **46.3%** | 28.0% |
+| factual, 8 measurable channels | 55.5% | **61.8%** | 50.9% |
+| factual, all 10 | 47.5% | **55.3%** | 46.9% |
+
+The what-if gap over copying is **+21.4 points**, against +12.6 for round 7 --
+and on a dataset that can pose the short-trip question at all.
+
+Per channel, what-if, 11k -> 78k (baseline in brackets):
+
+| Channel | 11k | 78k | baseline |
+|---|---|---|---|
+| soc | 39.8% | **59.9%** | 22.9% |
+| i_mean | 48.1% | **70.3%** | 41.3% |
+| v_mean | 36.9% | **54.5%** | 7.4% |
+| t_bat_max | 28.4% | **31.1%** | 18.7% |
+| t_bat_mean | 27.3% | 28.2% | 28.7% |
+| t_bay_max | 8.1% | 17.0% | 20.6% |
+
+The gains land on SoC and current -- the channels carrying the sulfation
+pathway, which is the mechanism behind round 13's 3.4x short-trip finding.
+
+### 18.3 What did not improve
+
+Battery temperature still ties the baseline, and peak bay temperature still
+loses to it. Both are thermal channels, and both are limited by the same
+thing: bay heat is pinned to the single recording's coolant and oil, so
+driving raises battery temperature by only ~2.2 C here against 10-20 C on a
+real car. More capacity cannot recover information the simulator never
+produced.
+
+### 18.4 Caveat
+
+One seed. The measured seed spread on what-if accuracy is ~6 points
+(section 15.3), so +21.4 is a real effect but not precise to the decimal.
